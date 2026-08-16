@@ -283,3 +283,65 @@ def test_fuzzy_endpoint(world, tmp_path):
     item = payload["items"][0]
     assert item["keeper"]["file_name"] == "IMG_1.jpg"
     assert item["time_delta_seconds"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_cancel_endpoint_stops_a_running_job(tmp_path):
+    import time
+
+    world = World()
+    api, session = build_app(world, tmp_path)
+
+    def slow_job(progress):
+        for i in range(100):
+            progress("counting", i, 100)
+            time.sleep(0.005)
+        return {"done": True}
+
+    session.run_job("scan", slow_job)
+    time.sleep(0.05)  # let it get going
+    assert api.get("/api/job").json()["job"]["running"] is True
+
+    response = api.post("/api/job/cancel")
+    assert response.status_code == 200
+    payload = wait_for_job(api)
+    assert payload["job"]["cancelled"] is True
+    assert payload["job"]["error"] is None
+    assert payload["last_result"]["cancelled"] is True
+
+    # nothing is running afterwards; a second cancel is a 409
+    assert api.post("/api/job/cancel").status_code == 409
+
+
+def test_cancel_endpoint_without_job(tmp_path):
+    world = World()
+    api, _ = build_app(world, tmp_path)
+    assert api.post("/api/job/cancel").status_code == 409
+
+
+def test_pairs_sorting_by_size_and_date(world, tmp_path):
+    from ..fakes.immich_api import days_ago
+
+    fake = world.fake
+    # three groups with distinct sizes and dates
+    fake.add_asset(world.p_id, "small-new", size_bytes=100)
+    fake.add_asset(world.s_id, "small-new", size_bytes=100)
+    fake.add_asset(world.p_id, "big-old", size_bytes=900, created_at=days_ago(90))
+    fake.add_asset(world.s_id, "big-old", size_bytes=900, created_at=days_ago(90))
+    fake.add_asset(world.p_id, "mid-mid", size_bytes=500, created_at=days_ago(30))
+    fake.add_asset(world.s_id, "mid-mid", size_bytes=500, created_at=days_ago(30))
+
+    api, _ = build_app(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+
+    by_size = api.get("/api/pairs?sort=size-desc").json()["items"]
+    assert [group["checksum"] for group in by_size] == ["big-old", "mid-mid", "small-new"]
+
+    by_size_asc = api.get("/api/pairs?sort=size-asc").json()["items"]
+    assert [group["checksum"] for group in by_size_asc] == ["small-new", "mid-mid", "big-old"]
+
+    by_date_asc = api.get("/api/pairs?sort=date-asc").json()["items"]
+    assert [group["checksum"] for group in by_date_asc] == ["big-old", "mid-mid", "small-new"]
+
+    # invalid sort is rejected
+    assert api.get("/api/pairs?sort=nope").status_code == 422

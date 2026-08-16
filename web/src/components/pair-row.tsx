@@ -1,4 +1,5 @@
-import { ExternalLink, Star } from "lucide-react"
+import { useState } from "react"
+import { ExternalLink, Film, ImageIcon, Star } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { humanBytes, type AssetDto, type LoserDto, type PairDto } from "@/lib/api"
@@ -18,6 +19,7 @@ function AssetThumb({
   label: string
   badgeClass: string
 }) {
+  const [broken, setBroken] = useState(false)
   return (
     <a
       href={asset.url}
@@ -26,15 +28,26 @@ function AssetThumb({
       className="group relative block size-20 shrink-0 overflow-hidden rounded-md border bg-muted"
       title={`${label}: ${asset.file_name}`}
     >
-      <img
-        src={asset.thumbnail_url}
-        alt={`${label} ${asset.file_name}`}
-        loading="lazy"
-        className="size-full object-cover"
-      />
+      {broken ? (
+        <span className="flex size-full flex-col items-center justify-center gap-1 text-muted-foreground">
+          {asset.type === "VIDEO" ? <Film className="size-6" /> : <ImageIcon className="size-6" />}
+          <span className="max-w-full truncate px-1 text-[10px]">{asset.file_name}</span>
+        </span>
+      ) : (
+        <img
+          src={asset.thumbnail_url}
+          alt={`${label} ${asset.file_name}`}
+          loading="lazy"
+          className="size-full object-cover"
+          onError={() => setBroken(true)}
+        />
+      )}
       <span className={cn("absolute top-1 left-1 rounded px-1.5 py-0.5 text-[10px] font-semibold", badgeClass)}>
         {ownerBadge(asset.owner_email)}
       </span>
+      {asset.type === "VIDEO" && !broken && (
+        <Film className="absolute bottom-1 left-1 size-3.5 text-white drop-shadow" />
+      )}
       {asset.is_favorite && (
         <Star className="absolute right-1 bottom-1 size-3.5 fill-yellow-400 text-yellow-400" />
       )}
@@ -62,7 +75,7 @@ export function PairRow({ pair, onToggle }: PairRowProps) {
 
   return (
     <div className="flex items-center gap-4 border-b px-4 py-3 last:border-b-0">
-      <div className="flex items-center gap-2">
+      <div className="flex max-w-md flex-wrap items-center gap-2">
         <AssetThumb asset={pair.keeper} label="keeper" badgeClass="bg-emerald-600 text-white" />
         <div className="text-xs text-muted-foreground">=</div>
         {pair.losers.map((loser) => (

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Info, RefreshCw, ScanSearch, Settings } from "lucide-react"
+import { Info, RefreshCw, ScanSearch, Settings, Square } from "lucide-react"
 import { ApplyPanel } from "@/components/apply-panel"
 import { ConnectionForm } from "@/components/connection-form"
 import { PairRow } from "@/components/pair-row"
@@ -29,9 +29,10 @@ import {
   type StatsDto,
 } from "@/lib/api"
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 10
 
 type Filter = "eligible" | "all" | "excluded" | "live-photo"
+type Sort = "date-desc" | "date-asc" | "size-desc" | "size-asc"
 
 export default function App() {
   const [config, setConfig] = useState<ConfigDto | null>(null)
@@ -41,6 +42,7 @@ export default function App() {
   const [lastResult, setLastResult] = useState<Record<string, unknown> | null>(null)
   const [pairs, setPairs] = useState<PairsResponse | null>(null)
   const [filter, setFilter] = useState<Filter>("eligible")
+  const [sort, setSort] = useState<Sort>("date-desc")
   const [offset, setOffset] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -63,10 +65,10 @@ export default function App() {
 
   const loadPairs = useCallback(() => {
     api
-      .pairs(filter, offset, PAGE_SIZE)
+      .pairs(filter, offset, PAGE_SIZE, sort)
       .then(setPairs)
       .catch(() => setPairs(null))
-  }, [filter, offset])
+  }, [filter, offset, sort])
 
   useEffect(() => {
     api.config().then(setConfig).catch((cause) => setConfigError(String(cause)))
@@ -112,9 +114,70 @@ export default function App() {
 
   const step = deriveStep(job, stats, lastResult)
 
+  const pager = (
+    <div className="flex items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={!pairs || offset === 0}
+        onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+      >
+        ← Prev
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={!pairs || offset + PAGE_SIZE >= pairs.total}
+        onClick={() => setOffset(offset + PAGE_SIZE)}
+      >
+        Next →
+      </Button>
+    </div>
+  )
+
+  const reviewControls = (
+    <div className="flex flex-wrap items-center gap-2">
+      <Select
+        value={filter}
+        onValueChange={(value) => {
+          setFilter(value as Filter)
+          setOffset(0)
+        }}
+      >
+        <SelectTrigger className="w-44" aria-label="Filter groups">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="eligible">Eligible</SelectItem>
+          <SelectItem value="all">All groups</SelectItem>
+          <SelectItem value="excluded">Excluded</SelectItem>
+          <SelectItem value="live-photo">Live-photo cases</SelectItem>
+        </SelectContent>
+      </Select>
+      <Select
+        value={sort}
+        onValueChange={(value) => {
+          setSort(value as Sort)
+          setOffset(0)
+        }}
+      >
+        <SelectTrigger className="w-44" aria-label="Sort groups">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="date-desc">Newest first</SelectItem>
+          <SelectItem value="date-asc">Oldest first</SelectItem>
+          <SelectItem value="size-desc">Largest first</SelectItem>
+          <SelectItem value="size-asc">Smallest first</SelectItem>
+        </SelectContent>
+      </Select>
+      {pager}
+    </div>
+  )
+
   if (config && !config.configured) {
     return (
-      <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 p-6">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-6 p-4 sm:p-6">
         <h1 className="text-2xl font-semibold tracking-tight">Immich cross-user dedup</h1>
         {configError && (
           <Alert variant="destructive">
@@ -128,7 +191,7 @@ export default function App() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 p-6">
+    <div className="mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-6 p-4 sm:p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Immich cross-user dedup</h1>
@@ -202,9 +265,18 @@ export default function App() {
               <span className="capitalize">
                 {job.kind} · {job.stage}
               </span>
-              <span className="text-muted-foreground">
-                {job.current}
-                {job.total !== null ? ` / ${job.total}` : ""}
+              <span className="flex items-center gap-3">
+                <span className="text-muted-foreground">
+                  {job.current}
+                  {job.total !== null ? ` / ${job.total}` : ""}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => api.cancelJob().catch((cause) => setConfigError(String(cause)))}
+                >
+                  <Square /> Stop
+                </Button>
               </span>
             </CardTitle>
           </CardHeader>
@@ -216,13 +288,19 @@ export default function App() {
 
       {!busy && lastResult && (
         <Alert>
-          <AlertTitle className="capitalize">{String(lastResult.kind)} finished</AlertTitle>
+          <AlertTitle className="capitalize">
+            {String(lastResult.kind)} {lastResult.cancelled ? "cancelled" : "finished"}
+          </AlertTitle>
           <AlertDescription>
-            <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-              {typeof lastResult.summary === "string"
-                ? lastResult.summary
-                : JSON.stringify(lastResult, null, 2)}
-            </pre>
+            {lastResult.cancelled ? (
+              <>{String(lastResult.note ?? "")}</>
+            ) : (
+              <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                {typeof lastResult.summary === "string"
+                  ? lastResult.summary
+                  : JSON.stringify(lastResult, null, 2)}
+              </pre>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -278,43 +356,9 @@ export default function App() {
       </Card>
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base">2 · Review groups</CardTitle>
-          <div className="flex items-center gap-2">
-            <Select
-              value={filter}
-              onValueChange={(value) => {
-                setFilter(value as Filter)
-                setOffset(0)
-              }}
-            >
-              <SelectTrigger className="w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="eligible">Eligible</SelectItem>
-                <SelectItem value="all">All groups</SelectItem>
-                <SelectItem value="excluded">Excluded</SelectItem>
-                <SelectItem value="live-photo">Live-photo cases</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!pairs || offset === 0}
-              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-            >
-              Prev
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!pairs || offset + PAGE_SIZE >= pairs.total}
-              onClick={() => setOffset(offset + PAGE_SIZE)}
-            >
-              Next
-            </Button>
-          </div>
+          {reviewControls}
         </CardHeader>
         <CardContent className="px-0 py-0">
           {!stats && <p className="px-4 py-6 text-sm text-muted-foreground">Run a scan first.</p>}
@@ -328,9 +372,12 @@ export default function App() {
             <PairRow key={pair.checksum} pair={pair} onToggle={togglePair} />
           ))}
           {pairs && pairs.total > PAGE_SIZE && (
-            <p className="px-4 py-2 text-xs text-muted-foreground">
-              {offset + 1}–{Math.min(offset + PAGE_SIZE, pairs.total)} of {pairs.total}
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2">
+              <p className="text-xs text-muted-foreground">
+                {offset + 1}–{Math.min(offset + PAGE_SIZE, pairs.total)} of {pairs.total}
+              </p>
+              {pager}
+            </div>
           )}
         </CardContent>
       </Card>

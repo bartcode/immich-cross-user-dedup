@@ -108,7 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.undo:
         return _undo(Path(args.undo), config)
 
-    return _scan_and_maybe_apply(config, args)
+    try:
+        return _scan_and_maybe_apply(config, args)
+    except KeyboardInterrupt:
+        print("\ninterrupted — anything already applied is journaled; undo with --undo")
+        return 130
 
 
 def _make_client(config):
@@ -121,26 +125,34 @@ def _undo(journal_path: Path, config) -> int:
     if not journal_path.exists():
         print(f"error: journal file not found: {journal_path}", file=sys.stderr)
         return 2
-    with _make_client(config) as client:
-        report = run_preflight(client, config)
-        if report.failed:
-            _print_preflight(report)
-            return 1
-        print(f"Undoing journal {journal_path} ...")
-        outcome = undo_journal(client, Journal(journal_path), report.users, progress=_progress)
-        _done_line()
-        print(
-            f"  restored assets:     {outcome.restored_assets}\n"
-            f"  unrestorable:        {len(outcome.unrestorable)} (already purged by Immich)\n"
-            f"  album rows removed:  {outcome.album_rows_removed}\n"
-            f"  album rows kept:     {outcome.album_rows_kept} (loser unrestorable)\n"
-            f"  metadata restored:   {outcome.metadata_restored}"
-        )
-        if outcome.errors:
-            print("  errors:")
-            for error in outcome.errors:
-                print(f"    - {error}")
-        return 0 if not outcome.errors else 1
+    try:
+        with _make_client(config) as client:
+            return _undo_with_client(journal_path, config, client)
+    except KeyboardInterrupt:
+        print("\ninterrupted — the journal can be re-run; already-restored items are skipped")
+        return 130
+
+
+def _undo_with_client(journal_path: Path, config, client) -> int:
+    report = run_preflight(client, config)
+    if report.failed:
+        _print_preflight(report)
+        return 1
+    print(f"Undoing journal {journal_path} ...")
+    outcome = undo_journal(client, Journal(journal_path), report.users, progress=_progress)
+    _done_line()
+    print(
+        f"  restored assets:     {outcome.restored_assets}\n"
+        f"  unrestorable:        {len(outcome.unrestorable)} (already purged by Immich)\n"
+        f"  album rows removed:  {outcome.album_rows_removed}\n"
+        f"  album rows kept:     {outcome.album_rows_kept} (loser unrestorable)\n"
+        f"  metadata restored:   {outcome.metadata_restored}"
+    )
+    if outcome.errors:
+        print("  errors:")
+        for error in outcome.errors:
+            print(f"    - {error}")
+    return 0 if not outcome.errors else 1
 
 
 def _scan_and_maybe_apply(config, args) -> int:

@@ -5,6 +5,8 @@ header of the user it is made for. Endpoints used (Immich v3 API):
 
 - GET    /api/users/me
 - POST   /api/search/metadata          (paginated asset listing, withExif)
+- POST   /api/search/statistics        (true asset count; the listing's "total"
+                                        field is just the page size and is ignored)
 - GET    /api/albums[?assetId=...]     (list albums / albums containing an asset)
 - PUT    /api/albums/{id}/assets       (add assets to album; POST on older servers)
 - DELETE /api/albums/{id}/assets       (remove assets from album)
@@ -61,6 +63,9 @@ class ImmichClient:
                 headers={"x-api-key": key},
                 timeout=timeout,
                 transport=transport,
+                # Immich redirects some media (e.g. video previews) to the file
+                # itself — follow so thumbnails resolve instead of returning 302s
+                follow_redirects=True,
             )
             for handle, key in keys.items()
         }
@@ -138,9 +143,13 @@ class ImmichClient:
     ) -> Iterator[dict[str, Any]]:
         """Yield every asset visible to this user's search, one page at a time.
 
-        NOTE: results may include partner-shared assets (Immich includes them when
-        partner sharing has "show in timeline" enabled). Callers must filter by
-        ``ownerId`` — see match.scan().
+        The response's ``total`` field is just the page size (deprecated
+        upstream), so progress reports ``None`` for the total — use
+        :meth:`asset_count` for the real number.
+
+        NOTE: results may include partner-shared assets (Immich includes them
+        when partner sharing has "show in timeline" enabled). Callers must
+        filter by ``ownerId`` — see match.scan().
         """
         page = 1
         fetched = 0
@@ -154,12 +163,18 @@ class ImmichClient:
             for item in items:
                 fetched += 1
                 if progress:
-                    progress(fetched, assets.get("total"))
+                    progress(fetched, None)
                 yield item
             next_page = assets.get("nextPage")
             if not next_page:
                 return
             page = int(next_page)
+
+    def asset_count(self, handle: str) -> int:
+        """Total number of assets visible to this user's search (own library
+        plus in-timeline partner shares), via /search/statistics."""
+        payload = self._request_json(handle, "POST", "/api/search/statistics", json={})
+        return int(payload.get("total") or 0)
 
     def get_albums_for_asset(self, handle: str, asset_id: str) -> list[dict[str, Any]]:
         payload = self._request_json(handle, "GET", "/api/albums", params={"assetId": asset_id})
@@ -168,13 +183,6 @@ class ImmichClient:
     def list_albums(self, handle: str) -> list[dict[str, Any]]:
         payload = self._request_json(handle, "GET", "/api/albums")
         return list(payload) if isinstance(payload, list) else []
-
-    def count_assets(self, handle: str) -> int:
-        """Single-page search probe: returns the total asset count for this user."""
-        payload = self._request_json(
-            handle, "POST", "/api/search/metadata", json={"page": 1, "size": 1, "withExif": False}
-        )
-        return int(payload.get("assets", {}).get("total") or 0)
 
     def add_album_assets(self, handle: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
         """Returns one BulkIdResponseDto per asset id: {id, success, error?}.
@@ -236,7 +244,10 @@ class ImmichClient:
         with_ = self._request_json(handle, "GET", "/api/partners", params={"direction": "shared-with"})
         return {"shared-by": list(by), "shared-with": list(with_)}
 
+    def get_thumbnail_response(self, handle: str, asset_id: str, *, size: str = "preview") -> httpx.Response:
+        """Thumbnail/preview image as the raw response (content-type varies —
+        Immich may redirect video previews to the file itself)."""
+        return self._request(handle, "GET", f"/api/assets/{asset_id}/thumbnail", params={"size": size})
+
     def get_thumbnail(self, handle: str, asset_id: str, *, size: str = "preview") -> bytes:
-        return self._request(
-            handle, "GET", f"/api/assets/{asset_id}/thumbnail", params={"size": size}
-        ).content
+        return self.get_thumbnail_response(handle, asset_id, size=size).content

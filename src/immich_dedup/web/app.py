@@ -7,6 +7,7 @@ Run with: cross-user-dedup-ui [--host 127.0.0.1] [--port 8642] [--token SECRET]
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,11 @@ from immich_dedup.core.preflight import run_preflight
 from immich_dedup.core.report import asset_url, write_csv, write_fuzzy_csv
 from immich_dedup.web.state import JobBusyError, Session, build_client, unconfigured_session
 
-WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
+# static frontend: repo-relative by default, overridable (e.g. /app/web/dist in Docker)
+WEB_DIST = Path(
+    os.environ.get("IMMICH_DEDUP_WEB_DIST")
+    or (Path(__file__).resolve().parents[3] / "web" / "dist")
+)
 
 
 # -- serialization -----------------------------------------------------------
@@ -226,6 +231,12 @@ def create_app(
         payload["last_result"] = session.last_result
         return payload
 
+    @app.post("/api/job/cancel")
+    def cancel_job(_: None = Depends(require_token)) -> dict[str, Any]:
+        if not session.cancel_job():
+            raise HTTPException(status_code=409, detail="no job is running")
+        return {"cancelled": True}
+
     @app.get("/api/stats")
     def get_stats(_: None = Depends(require_token)) -> dict[str, Any]:
         result = scan_or_404()
@@ -234,8 +245,9 @@ def create_app(
     @app.get("/api/pairs")
     def get_pairs(
         filter: str = Query("eligible", pattern="^(all|eligible|excluded|live-photo)$"),
+        sort: str = Query("date-desc", pattern="^(date|size)-(asc|desc)$"),
         offset: int = Query(0, ge=0),
-        limit: int = Query(50, ge=1, le=200),
+        limit: int = Query(10, ge=1, le=200),
         _: None = Depends(require_token),
     ) -> dict[str, Any]:
         result = scan_or_404()
@@ -248,6 +260,21 @@ def create_app(
             groups = [
                 g for g in groups if any(case != LivePhotoCase.ALIGNED for case in g.live_photo.values())
             ]
+
+        from datetime import UTC, datetime
+
+        def _date_key(group):
+            latest = max(
+                (loser.file_created_at for loser in group.losers if loser.file_created_at),
+                default=datetime.min.replace(tzinfo=UTC),
+            )
+            return (latest, group.checksum)
+
+        _, direction = sort.split("-")
+        reverse = direction == "desc"
+        key = _date_key if sort.startswith("date") else (lambda g: (g.reclaimable_bytes, g.checksum))
+        groups = sorted(groups, key=key, reverse=reverse)
+
         base_url = session.config.immich_url
         return {
             "total": len(groups),
@@ -356,22 +383,26 @@ def create_app(
     ) -> Response:
         result = session.scan_result
         handle = _owner_handle(result, asset_id) or session.config.primary_email
+
+        def fetch(with_handle: str) -> Response:
+            upstream = session.client.get_thumbnail_response(with_handle, asset_id, size=size)
+            return Response(
+                content=upstream.content,
+                media_type=upstream.headers.get("content-type", "image/jpeg"),
+                headers={"Cache-Control": "private, max-age=3600"},
+            )
+
         try:
-            content = session.client.get_thumbnail(handle, asset_id, size=size)
+            return fetch(handle)
         except ImmichApiError:
             for fallback in session.client.handles:
                 if fallback == handle:
                     continue
                 try:
-                    content = session.client.get_thumbnail(fallback, asset_id, size=size)
-                    break
+                    return fetch(fallback)
                 except ImmichApiError:
                     continue
-            else:
-                raise HTTPException(status_code=404, detail="thumbnail not available") from None
-        return Response(
-            content=content, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"}
-        )
+            raise HTTPException(status_code=404, detail="thumbnail not available") from None
 
     @app.post("/api/fuzzy")
     def run_fuzzy(_: None = Depends(require_token)) -> dict[str, Any]:

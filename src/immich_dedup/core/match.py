@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from immich_dedup.core.api import ImmichClient
+from immich_dedup.core.api import ImmichApiError, ImmichClient
 from immich_dedup.core.models import (
     AlbumRef,
     AssetInfo,
@@ -56,13 +56,17 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 def user_assets(client: ImmichClient, user: User, progress: ProgressFn | None = None) -> list[AssetInfo]:
     handle = user.email
-    assets: list[AssetInfo] = []
     users = {user.id: user}
+    try:
+        total: int | None = client.asset_count(handle)  # true count via statistics
+    except ImmichApiError:
+        total = None  # older server or missing scope — progress without a denominator
 
-    def on_page(count: int, total: int | None) -> None:
+    def on_page(count: int, _ignored_total: int | None) -> None:
         if progress:
             progress(f"fetch-{user.email}", count, total)
 
+    assets: list[AssetInfo] = []
     for item in client.iter_assets(handle, with_exif=True, progress=on_page):
         # Partner-shared assets appear in search results when "show in timeline"
         # is enabled; only assets actually owned by this user belong in the scan.

@@ -29,6 +29,7 @@ BASE = "http://immich.test"
 ROUTE_SCOPES: list[tuple[str, re.Pattern[str], str]] = [
     ("GET", re.compile(r"^/api/users/me$"), "user.read"),
     ("POST", re.compile(r"^/api/search/metadata$"), "asset.read"),
+    ("POST", re.compile(r"^/api/search/statistics$"), "asset.statistics"),
     ("GET", re.compile(r"^/api/albums$"), "album.read"),
     ("PUT", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.create"),
     ("POST", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.create"),
@@ -229,6 +230,9 @@ class FakeImmich:
         if method == "POST" and path == "/api/search/metadata":
             return self._search_metadata(user, request)
 
+        if method == "POST" and path == "/api/search/statistics":
+            return self._search_statistics(user)
+
         if method == "GET" and path == "/api/albums":
             return self._albums_list(user, request)
 
@@ -268,25 +272,31 @@ class FakeImmich:
 
         return httpx.Response(404, json={"message": f"No fake route for {method} {path}"})
 
+    def _visible_candidates(self, user: dict) -> list[dict]:
+        visible_owners = {user["id"]}
+        for (shared_by, shared_with), in_timeline in self.partners.items():
+            if shared_with == user["id"] and in_timeline:
+                visible_owners.add(shared_by)
+        return [
+            asset
+            for asset in self.assets.values()
+            if asset["ownerId"] in visible_owners
+            and not asset["trashed"]
+            and not asset["deleted"]
+            and asset["visibility"] != "locked"
+        ]
+
+    def _search_statistics(self, user: dict) -> httpx.Response:
+        # like the real server: the true count of assets visible to this user
+        return httpx.Response(200, json={"total": len(self._visible_candidates(user))})
+
     def _search_metadata(self, user: dict, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         page = body.get("page", 1)
         size = body.get("size", 250)
         with_exif = body.get("withExif", False)
 
-        visible_owners = {user["id"]}
-        for (shared_by, shared_with), in_timeline in self.partners.items():
-            if shared_with == user["id"] and in_timeline:
-                visible_owners.add(shared_by)
-
-        candidates = [
-            a
-            for a in self.assets.values()
-            if a["ownerId"] in visible_owners
-            and not a["trashed"]
-            and not a["deleted"]
-            and a["visibility"] != "locked"
-        ]
+        candidates = self._visible_candidates(user)
         candidates.sort(key=lambda a: (a["fileCreatedAt"], a["id"]), reverse=True)
 
         total = len(candidates)
@@ -298,7 +308,7 @@ class FakeImmich:
             json={
                 "albums": {"total": 0, "count": 0, "items": [], "facets": [], "nextPage": None},
                 "assets": {
-                    "total": total,
+                    "total": len(items),  # like the real server: the page length, not the library size
                     "count": len(items),
                     "items": [self._asset_response(a, with_exif) for a in items],
                     "facets": [],

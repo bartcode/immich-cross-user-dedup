@@ -48,8 +48,8 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="grid gap-3 sm:grid-cols-3">
+    <div className="flex flex-col gap-4">
+      <div className="grid gap-4 lg:grid-cols-3">
         <div className="grid gap-1.5">
           <Label htmlFor="limit">Limit (groups)</Label>
           <Input
@@ -60,25 +60,42 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
             value={limit}
             onChange={(event) => setLimit(event.target.value)}
           />
+          <p className="text-xs text-muted-foreground">
+            Process at most this many groups now — leave empty for all. Handy for trying a small batch
+            first.
+          </p>
         </div>
+
         <div className="grid gap-1.5">
-          <Label>Live photos without keeper motion</Label>
+          <Label>Live photos where the primary lacks the motion clip</Label>
           <Select value={motionPolicy} onValueChange={setMotionPolicy}>
-            <SelectTrigger>
+            <SelectTrigger aria-label="Live photo motion policy">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="trash">Trash loser + its motion</SelectItem>
-              <SelectItem value="skip">Skip these pairs</SelectItem>
+              <SelectItem value="trash">Trash duplicate + its motion clip</SelectItem>
+              <SelectItem value="skip">Skip these groups</SelectItem>
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground">
+            A live photo is a still image plus a short motion video, imported as two files. Usually
+            every user has both halves. Rarely, the primary&apos;s copy has no motion clip while the
+            duplicate does: trashing also removes that clip (the primary keeps the still, just without
+            motion playback); skipping leaves those few groups untouched for you to review by hand.
+          </p>
         </div>
+
         <div className="grid gap-1.5">
           <Label htmlFor="merge">Merge favorites &amp; descriptions</Label>
           <div className="flex h-9 items-center gap-2">
             <Switch id="merge" checked={mergeMetadata} onCheckedChange={setMergeMetadata} />
-            <span className="text-xs text-muted-foreground">onto the keeper</span>
+            <span className="text-xs text-muted-foreground">copy them onto the kept photo</span>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Before a duplicate is trashed: if its owner marked it as favorite or wrote a description
+            and the kept copy has neither, both are copied onto the kept copy (and reverted on undo).
+            Otherwise that information is lost with the duplicate.
+          </p>
         </div>
       </div>
 
@@ -86,7 +103,7 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogTrigger asChild>
-          <Button disabled={disabled || stats.eligible_count === 0}>
+          <Button className="justify-self-start" disabled={disabled || stats.eligible_count === 0}>
             <Play /> Apply dedup
           </Button>
         </DialogTrigger>
@@ -101,16 +118,23 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
           <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
             <li>
               The primary user&apos;s copy joins every album that contained another user&apos;s copy
-              ({stats.affected_albums} albums affected overall).
+              ({stats.affected_albums} albums affected overall) — album by album, shared with the
+              primary as editor where needed.
             </li>
             <li>
               ~{trashedEstimate} duplicate assets from {stats.per_user.length} other user
               {stats.per_user.length === 1 ? "" : "s"} move to the trash — each trashed with that
-              user&apos;s own API key (~{humanBytes(stats.reclaimable_bytes)} reclaimable after purge).
+              user&apos;s own API key (~{humanBytes(stats.reclaimable_bytes)} reclaimable after
+              purge). Immich keeps trashed items restorable for the trash retention period.
             </li>
+            {mergeMetadata && (
+              <li>Favorites and descriptions from duplicates are copied onto the kept copies first.</li>
+            )}
             <li>
-              Live photos: {motionPolicy === "trash" ? "loser still + motion trashed together" : "asymmetric copies skipped"}
-              {mergeMetadata ? "; favorites/descriptions merged onto keepers" : ""}.
+              Live photos: {motionPolicy === "trash"
+                ? "duplicates are trashed together with their motion clips"
+                : "groups where the primary lacks the motion clip are left untouched"}
+              .
             </li>
             <li>Everything is journaled and reversible via Undo until Immich purges the trash.</li>
           </ul>

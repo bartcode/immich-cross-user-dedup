@@ -89,8 +89,8 @@ These are the scopes to select:
 **Primary key** — never deletes anything:
 
 ```text
-user.read · partner.read · asset.read · asset.view · album.read ·
-albumAsset.create · albumAsset.delete
+user.read · partner.read · asset.read · asset.view · asset.statistics ·
+album.read · albumAsset.create · albumAsset.delete
 (+ asset.update only if you use --merge-metadata)
 ```
 
@@ -98,9 +98,9 @@ albumAsset.create · albumAsset.delete
 scopes:
 
 ```text
-user.read · partner.read · asset.read · asset.view · album.read ·
-albumAsset.create · albumAsset.delete · albumUser.create · albumUser.delete ·
-asset.delete
+user.read · partner.read · asset.read · asset.view · asset.statistics ·
+album.read · albumAsset.create · albumAsset.delete · albumUser.create ·
+albumUser.delete · asset.delete
 ```
 
 How the scopes map to the calls this tool makes:
@@ -110,6 +110,7 @@ How the scopes map to the calls this tool makes:
 | `GET /users/me` (pre-flight) | `user.read` | ✓ | ✓ |
 | `GET /partners` (pre-flight) | `partner.read` | ✓ | ✓ |
 | `POST /search/metadata` (list own library) | `asset.read` | ✓ | ✓ |
+| `POST /search/statistics` (true library count for scan progress) | `asset.statistics` | ✓ | ✓ |
 | `GET /albums` (find albums containing a copy) | `album.read` | ✓ | ✓ |
 | `GET /assets/{id}` (undo checks) | `asset.read` | ✓ | ✓ |
 | `GET /assets/{id}/thumbnail` (previews) | `asset.view` | ✓ | ✓ |
@@ -162,6 +163,34 @@ There's a `Makefile` for the common tasks — `make help` lists them:
 
 The web frontend is pre-built (`web/dist`), so the server needs no Node.js.
 Set `IMMICH_URL` to a URL reachable from where you run the tool.
+
+### Docker
+
+A prebuilt image is published to ghcr on every push to `main` (and version
+tags):
+
+```sh
+docker run --pull always -p 8642:8642 \
+  -e IMMICH_URL=https://photos.example.com \
+  -e PRIMARY_EMAIL=alice@example.com -e PRIMARY_API_KEY=... \
+  -e SECONDARY_EMAILS=bob@example.com -e SECONDARY_API_KEYS=... \
+  -v immich-dedup-reports:/app/reports \
+  ghcr.io/bartcode/immich-cross-user-dedup:main
+```
+
+Then open http://localhost:8642 (add `--token SECRET` after the image name to
+require a bearer token). The `-v` volume keeps reports and undo journals
+outside the container. You can also skip all `-e` vars and configure the
+connection in the browser — it persists inside the container.
+
+The CLI is available in the same image:
+
+```sh
+docker run --rm ... --entrypoint cross-user-dedup \
+  ghcr.io/bartcode/immich-cross-user-dedup:main --apply --limit 20
+```
+
+Build locally with `docker build -t immich-cross-user-dedup .`.
 
 ## CLI usage
 

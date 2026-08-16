@@ -20,6 +20,7 @@ PRIMARY_SCOPES = [
     "partner.read",
     "asset.read",
     "asset.view",
+    "asset.statistics",
     "album.read",
     "albumAsset.create",
     "albumAsset.delete",
@@ -60,7 +61,7 @@ def test_all_scope_grants_everything():
     fake, ids = seeded_world(secondary_permissions=["all"])
     client = client_for(fake, ids)
     # 2 = the secondary's own asset + the primary's partner-shared asset
-    assert client.count_assets(S) == 2  # asset.read via 'all'
+    assert client.asset_count(S) == 2  # asset.statistics via 'all'
     client.trash_assets(S, [ids["loser"]])  # asset.delete via 'all'
     assert fake.asset(ids["loser"])["trashed"] is True
 
@@ -112,7 +113,8 @@ def test_preflight_probe_reports_missing_scope():
     assert report.failed
     scope_check = next(c for c in report.checks if c.name == f"{S} scopes")
     assert scope_check.ok is False
-    assert "asset.read" in scope_check.detail  # Immich names the missing scope
+    # Immich names the first missing scope the probe hits (asset.statistics)
+    assert "Missing required permission" in scope_check.detail
 
 
 def test_preflight_probe_passes_with_documented_scopes():

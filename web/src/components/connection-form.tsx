@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { api, type ConfigDto } from "@/lib/api"
 
-const READ_SCOPES = ["user.read", "partner.read", "asset.read", "asset.view", "album.read"]
+const READ_SCOPES = ["user.read", "partner.read", "asset.read", "asset.view", "album.read", "asset.statistics"]
 const ALBUM_WRITE_SCOPES = ["albumAsset.create", "albumAsset.delete"]
 const ALBUM_SHARE_SCOPES = ["albumUser.create", "albumUser.delete"]
 

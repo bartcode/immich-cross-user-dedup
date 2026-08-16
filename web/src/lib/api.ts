@@ -27,6 +27,7 @@ export interface JobDto {
   current: number
   total: number | null
   error: string | null
+  cancelled: boolean
   started_at: string | null
   finished_at: string | null
 }
@@ -139,9 +140,12 @@ export const api = {
   }) => request<ConfigDto>("/api/config", { method: "POST", body: JSON.stringify(body) }),
   scan: () => request<JobDto>("/api/scan", { method: "POST" }),
   job: () => request<JobStatusResponse>("/api/job"),
+  cancelJob: () => request<{ cancelled: boolean }>("/api/job/cancel", { method: "POST" }),
   stats: () => request<StatsDto>("/api/stats"),
-  pairs: (filter: string, offset: number, limit: number) =>
-    request<PairsResponse>(`/api/pairs?filter=${filter}&offset=${offset}&limit=${limit}`),
+  pairs: (filter: string, offset: number, limit: number, sort = "date-desc") =>
+    request<PairsResponse>(
+      `/api/pairs?filter=${filter}&offset=${offset}&limit=${limit}&sort=${sort}`,
+    ),
   pair: (checksum: string) => request<PairDto>(`/api/pairs/${checksum}`),
   exclude: (checksum: string) => request<unknown>(`/api/pairs/${checksum}/exclude`, { method: "POST" }),
   include: (checksum: string) => request<unknown>(`/api/pairs/${checksum}/include`, { method: "POST" }),

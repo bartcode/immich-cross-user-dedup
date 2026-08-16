@@ -24,6 +24,7 @@ class JobStatus:
     current: int = 0
     total: int | None = None
     error: str | None = None
+    cancelled: bool = False
     started_at: str | None = None
     finished_at: str | None = None
 
@@ -35,9 +36,14 @@ class JobStatus:
             "current": self.current,
             "total": self.total,
             "error": self.error,
+            "cancelled": self.cancelled,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+
+
+class JobCancelledError(Exception):
+    """Raised inside a running job after cancel_job() was called."""
 
 
 def _client_keys(config: DedupConfig) -> dict[str, str]:
@@ -64,6 +70,7 @@ class Session:
     def __post_init__(self) -> None:
         self._job_lock = threading.Lock()
         self._state_lock = threading.Lock()
+        self._cancel = threading.Event()
 
     # -- job runner ---------------------------------------------------------
 
@@ -73,14 +80,25 @@ class Session:
             if self.job.running:
                 raise JobBusyError(f"a {self.job.kind} job is already running")
             self.job = JobStatus(kind=kind, running=True, started_at=_now())
+        self._cancel.clear()
         thread = threading.Thread(target=self._execute, args=(kind, fn), daemon=True)
         thread.start()
         return self.job.as_dict()
+
+    def cancel_job(self) -> bool:
+        """Request cancellation of the running job. The job aborts at its next
+        progress checkpoint. Returns False when nothing is running."""
+        if not self.job.running:
+            return False
+        self._cancel.set()
+        return True
 
     def _execute(self, kind: str, fn: Callable[[JobStatus], dict[str, Any]]) -> None:
         status = self.job
 
         def progress(stage: str, current: int, total: int | None) -> None:
+            if self._cancel.is_set():
+                raise JobCancelledError(kind)
             with self._state_lock:
                 status.stage = stage
                 status.current = current
@@ -93,6 +111,17 @@ class Session:
                 status.finished_at = _now()
                 status.stage = "done"
                 self.last_result = {"kind": kind, **result}
+        except JobCancelledError:
+            with self._state_lock:
+                status.running = False
+                status.finished_at = _now()
+                status.cancelled = True
+                status.stage = "cancelled"
+                self.last_result = {
+                    "kind": kind,
+                    "cancelled": True,
+                    "note": "cancelled — any work already done is journaled and undoable",
+                }
         except BaseException as error:  # noqa: BLE001 - surfaced to the UI
             with self._state_lock:
                 status.running = False

@@ -156,3 +156,26 @@ def test_thumbnail_permissions(world, keys):
         client.get_thumbnail(S, asset)
     world.set_partner(keys["p_id"], keys["s_id"])
     assert client.get_thumbnail(S, asset) == f"thumb:{asset}".encode()
+
+
+def test_asset_count_returns_true_total_including_partner_assets(world, keys):
+    client = make(world, keys)
+    world.add_asset(keys["p_id"], "p1")
+    world.add_asset(keys["p_id"], "p2")
+    world.add_asset(keys["s_id"], "s1")
+    world.set_partner(keys["s_id"], keys["p_id"], in_timeline=True)
+
+    # primary sees their own 2 plus the partner-shared 1
+    assert client.asset_count(P) == 3
+    assert client.asset_count(S) == 1
+
+
+def test_metadata_search_total_is_page_size_not_library_size(world, keys):
+    """Documents why scan progress ignores the listing's total: Immich sets it
+    to the page length (deprecated upstream)."""
+    client = make(world, keys)
+    for i in range(7):
+        world.add_asset(keys["p_id"], f"c-{i}")
+
+    body = client._request_json(P, "POST", "/api/search/metadata", json={"page": 1, "size": 5})
+    assert body["assets"]["total"] == 5 and len(body["assets"]["items"]) == 5
