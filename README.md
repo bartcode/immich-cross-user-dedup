@@ -1,23 +1,151 @@
 # immich-cross-user-dedup
 
-Remove duplicate media shared by two Immich users — via the public Immich API, no
-database or filesystem access required.
+Remove duplicate media shared by two Immich users — through the public Immich API,
+with a CLI and a web UI. No database, filesystem, or SSH access to the Immich
+server required.
 
-Built for the classic Google Photos migration problem: two people exported the same
-shared albums from Google Photos and imported both exports into Immich, leaving every
-shared photo duplicated across the two accounts. Immich's built-in duplicate detection
-only works within a single user's library, so cross-user duplicates persist silently.
-
-Status: work in progress. See the plan in the commit history; full documentation
- lands with the first release.
+Built for the classic Google Photos migration problem: two people exported the
+same shared albums from Google Photos (Takeout) and imported both exports into
+Immich, so every shared photo exists once per account. Immich's built-in
+duplicate detection only works within a single user's library, so these
+cross-user duplicates persist silently.
 
 ## How it works
 
-1. **Scan** — fetches both users' assets through the API and groups them by SHA-1
-   checksum. Same bytes on both sides = duplicate pair.
-2. **Review** — inspect pairs (CLI CSV report or the web UI) and exclude any you
-   want to keep in both libraries.
-3. **Apply** — for every pair: add the primary user's copy to each album that
-   contained the secondary user's copy, then move the secondary's copy to the trash.
-4. **Undo** (until Immich purges the trash) — every action is journaled and can be
-   reversed.
+1. **Scan** — fetches both users' assets via the API and groups them by SHA-1
+   checksum (`asset.checksum`, computed by Immich at upload). Same bytes on both
+   sides = duplicate pair. The *primary* user's copy is the **keeper**; the
+   *secondary* user's copy is the **loser**.
+2. **Review** — inspect pairs (web UI with side-by-side thumbnails, or the CSV
+   report) and exclude any pair you want to keep in both libraries.
+3. **Apply** — for every remaining pair:
+   - the keeper is added to **every album** that contained the loser (queried
+     with both users' keys, so albums owned by either user are covered);
+   - optionally, the loser's favorite flag / description is merged onto the
+     keeper (`--merge-metadata`);
+   - the loser is moved to the **trash** via `DELETE /assets` (`force: false`) —
+     exactly what Immich's own trash does. Live-photo motion videos are trashed
+     together with their still so no invisible orphans linger.
+4. **Undo** — every action is journaled (`reports/dedup_apply_*.jsonl`).
+   `--undo <journal>` restores trashed assets, removes the album additions made
+   by the run, and reverts metadata merges. This works until Immich's purge job
+   hard-deletes trashed assets (default: 30 days); already-purged assets are
+   reported and skipped.
+
+Immich itself handles all heavy lifting after the trash: purging originals and
+generated thumbnails/previews/encoded videos, quota updates, stack maintenance.
+
+### How media stays accessible to both users
+
+After dedup, each photo has exactly one owner (the primary user). The secondary
+user still sees all of it because:
+
+1. **Shared albums — automatic.** The keeper joins every album that contained
+   the loser, and albums can contain assets from multiple users in Immich. If
+   the secondary had the photo in "Summer trip", they still see it there.
+2. **Partner sharing — prerequisite.** Cross-user album additions require
+   partner sharing between the two users (Immich → Account Settings → Partner
+   Sharing, both directions) — the pre-flight check enforces this. As a bonus,
+   partner sharing keeps the secondary user's *timeline* visibility of deduped
+   photos, not just album visibility.
+3. **Trade-offs.** The secondary loses direct ownership of the shared copies:
+   they can no longer independently trash/re-upload them, and their copies'
+   face-detection samples disappear with the purge (the primary's copies keep
+   theirs; people are per-owner in Immich).
+
+## Prerequisites
+
+- Immich v2/v3 with API access enabled
+- An API key for **each** of the two users (Account Settings → API Keys)
+- Partner sharing enabled **in both directions** between the two users
+- A current backup of your Immich instance (the tool only trashes, but still)
+
+## Setup
+
+Requires [uv](https://docs.astral.sh/uv/) (Python 3.11+):
+
+```sh
+git clone https://github.com/bartcode/immich-cross-user-dedup.git
+cd immich-cross-user-dedup
+uv sync
+cp .env.example .env   # fill in your values
+```
+
+The web frontend is pre-built (`web/dist`), so the server needs no Node.js.
+Set `IMMICH_URL` to a URL reachable from where you run the tool.
+
+## CLI usage
+
+```sh
+# Dry run: scan + CSV report + summary (changes nothing)
+uv run cross-user-dedup
+
+# Near-duplicates that differ byte-wise (edits/re-encodes), report only
+uv run cross-user-dedup --fuzzy
+
+# Apply: transfer albums + trash losers, journaled
+uv run cross-user-dedup --apply
+uv run cross-user-dedup --apply --limit 20          # small batch first
+uv run cross-user-dedup --apply --merge-metadata    # favorites/descriptions
+uv run cross-user-dedup --apply --live-photo-motion skip  # keep asymmetric live photos
+
+# Undo an apply run (until Immich purges the trash)
+uv run cross-user-dedup --undo reports/dedup_apply_<timestamp>.jsonl
+```
+
+Reports land in `reports/`: `dedup_report.csv` (one row per pair, with Immich
+web URLs for spot-checking), `dedup_fuzzy.csv`, and the apply journals.
+
+## Web UI
+
+```sh
+uv run cross-user-dedup-ui                 # http://127.0.0.1:8642
+uv run cross-user-dedup-ui --token SECRET  # require Bearer token on /api
+uv run cross-user-dedup-ui --host 0.0.0.0 --port 8080  # expose (use with token!)
+```
+
+The UI mirrors the pipeline: a step bar (Scan → Review → Apply → Done), overview
+cards (pairs, exclusions, live-photo cases, reclaimable space), a pair browser
+with side-by-side thumbnails and per-pair exclude toggles, an apply panel with a
+confirmation dialog, and an undo panel listing journals with a preview of what
+undo restores. One background job runs at a time, with live progress.
+
+To use it from another machine, prefer an SSH tunnel over exposing the port:
+`ssh -L 8642:127.0.0.1:8642 your-server`.
+
+### Demo without a real server
+
+```sh
+uv run python scripts/serve_fake.py   # seeds a fake Immich with test data
+```
+
+## Notes & caveats
+
+- **Checksums are trusted.** Matching relies on Immich's upload-time SHA-1; the
+  API offers no independent byte verification.
+- **Space is reclaimed at purge time.** The reported reclaimable size counts
+  originals only; Immich additionally removes generated previews/thumbnails.
+- During trash retention, affected albums show both copies side by side, and
+  album covers may reset (cosmetic).
+- The fuzzy tier is metadata-based (same type + filename + timestamp ±2s + size
+  within 1%) and report-only — review those pairs by hand.
+- Large libraries: scanning pages through `/search/metadata` (1000/page); a
+  50k-asset library takes a few hundred requests.
+
+## Development
+
+```sh
+uv run pytest              # unit tests (fast, no services needed)
+uv run ruff check .
+cd web && npm install && npm run dev   # frontend dev server (proxies /api to :8642)
+npm run build                          # rebuild web/dist (commit the result)
+```
+
+Tests run against an in-memory fake Immich API (`tests/fakes/immich_api.py`)
+that models the relevant permission rules (owner-only deletes, partner-gated
+album adds, partner assets appearing in search). Round-trip coverage includes:
+apply → idempotent re-apply → undo restores the exact prior state.
+
+## License
+
+MIT
