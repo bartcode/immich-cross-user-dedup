@@ -23,7 +23,7 @@ from immich_dedup.core.match import fuzzy_candidates, scan, user_assets
 from immich_dedup.core.models import AssetInfo, LivePhotoCase, ScanResult
 from immich_dedup.core.preflight import run_preflight
 from immich_dedup.core.report import asset_url, write_csv, write_fuzzy_csv
-from immich_dedup.web.state import JobBusyError, Session, build_client, unconfigured_session
+from immich_dedup.web.state import JobBusyError, Session, build_client, log, unconfigured_session
 
 # static frontend: repo-relative by default, overridable (e.g. /app/web/dist in Docker)
 WEB_DIST = Path(
@@ -220,6 +220,13 @@ def create_app(
             )
             session.scan_result = result
             session.persist_scan()  # survive restarts (includes exclusions)
+            stats = result.stats
+            log(
+                "scan",
+                f"{stats.group_count} groups, {stats.reclaimable_assets} assets reclaimable "
+                f"({stats.reclaimable_human}), skipped {stats.skipped_no_primary} without primary copy"
+                f" — report: {csv_path}",
+            )
             return {"group_count": result.stats.group_count, "report_csv": str(csv_path)}
 
         try:
@@ -332,9 +339,8 @@ def create_app(
                 # keep only the user's exclusions for the next scan
                 session.save_exclusions(result.excluded)
                 session.clear_scan()
-            if outcome.errors or outcome.aborted or outcome.album_failures:
-                # problems must be visible in the container logs, not just the UI
-                print(f"[apply] {outcome.summary()}")
+            # one greppable line with the full outcome (failures, blocks, abort)
+            log("apply", outcome.summary().replace("\n", " | "))
             return {
                 "headline": (
                     f"{outcome.applied_groups} of {len(result.eligible_groups())} eligible groups "
@@ -484,6 +490,14 @@ def create_app(
             finally:
                 # the library changed — the scan snapshot no longer matches it
                 session.clear_scan()
+            log(
+                "undo",
+                f"restored {result_payload['restored_assets']} assets, "
+                f"removed {result_payload['album_rows_removed']} album rows, "
+                f"reverted {result_payload['metadata_restored']} merges, "
+                f"{len(result_payload['errors'])} errors"
+                f" — journal: {path.name}",
+            )
             return result_payload
 
         try:

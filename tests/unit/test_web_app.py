@@ -446,3 +446,18 @@ def test_job_endpoint_includes_stats_while_a_job_runs(tmp_path):
     assert payload["stats"] is not None
     assert payload["stats"]["group_count"] == 1
     wait_for_job(api)
+
+
+def test_job_lifecycle_is_logged(world, tmp_path, capsys):
+    """Job logs go to stdout: start, progress, finish with the result line."""
+    world.fake.add_asset(world.p_id, "sum-1")
+    world.fake.add_asset(world.s_id, "sum-1")
+    api, _ = build_app(world, tmp_path)
+
+    api.post("/api/scan")
+    wait_for_job(api)
+
+    output = capsys.readouterr().out
+    assert "[scan] started" in output
+    assert "[scan] finished in" in output
+    assert "[scan] 1 groups" in output

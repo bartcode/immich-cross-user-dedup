@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -48,6 +49,12 @@ class JobCancelledError(Exception):
     """Raised inside a running job after cancel_job() was called."""
 
 
+def log(tag: str, message: str) -> None:
+    """Job log line to stdout — visible in `make ui`'s terminal and docker logs."""
+    stamp = datetime.now().strftime("%H:%M:%S")
+    print(f"{stamp} [{tag}] {message}", flush=True)
+
+
 def _client_keys(config: DedupConfig) -> dict[str, str]:
     keys = {config.primary_email: config.primary_api_key}
     keys.update({secondary.email: secondary.api_key for secondary in config.secondaries})
@@ -73,6 +80,7 @@ class Session:
         self._job_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._cancel = threading.Event()
+        self._job_started = 0.0
         self._restore_scan()
 
     # -- scan persistence ----------------------------------------------------
@@ -138,6 +146,8 @@ class Session:
                 raise JobBusyError(f"a {self.job.kind} job is already running")
             self.job = JobStatus(kind=kind, running=True, started_at=_now())
         self._cancel.clear()
+        self._job_started = time.monotonic()
+        log(kind, "started")
         thread = threading.Thread(target=self._execute, args=(kind, fn), daemon=True)
         thread.start()
         return self.job.as_dict()
@@ -148,14 +158,22 @@ class Session:
         if not self.job.running:
             return False
         self._cancel.set()
+        log(self.job.kind or "job", "cancellation requested")
         return True
 
     def _execute(self, kind: str, fn: Callable[[JobStatus], dict[str, Any]]) -> None:
         status = self.job
+        last_log = {"stage": "", "t": 0.0}
 
         def progress(stage: str, current: int, total: int | None) -> None:
             if self._cancel.is_set():
                 raise JobCancelledError(kind)
+            # log each new stage and then at most every 5s so long jobs show life
+            now = time.monotonic()
+            if stage != last_log["stage"] or now - last_log["t"] >= 5.0:
+                suffix = f"/{total}" if total is not None else ""
+                log(kind, f"{stage} {current}{suffix}")
+                last_log.update(stage=stage, t=now)
             with self._state_lock:
                 status.stage = stage
                 status.current = current
@@ -168,6 +186,7 @@ class Session:
                 status.finished_at = _now()
                 status.stage = "done"
                 self.last_result = {"kind": kind, **result}
+            log(kind, f"finished in {time.monotonic() - self._job_started:.1f}s")
         except JobCancelledError:
             with self._state_lock:
                 status.running = False
@@ -179,12 +198,13 @@ class Session:
                     "cancelled": True,
                     "note": "cancelled — any work already done is journaled and undoable",
                 }
+            log(kind, f"cancelled after {time.monotonic() - self._job_started:.1f}s")
         except BaseException as error:  # noqa: BLE001 - surfaced to the UI
             with self._state_lock:
                 status.running = False
                 status.finished_at = _now()
                 status.error = f"{type(error).__name__}: {error}"
-            print(f"[job] {kind} failed: {status.error}")  # visible in container logs
+            log(kind, f"failed after {time.monotonic() - self._job_started:.1f}s: {status.error}")
 
     # -- helpers ------------------------------------------------------------
 
