@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from immich_dedup.core.api import ImmichAuthError, ImmichClient
+from immich_dedup.core.api import ImmichApiError, ImmichAuthError, ImmichClient
 from immich_dedup.core.config import DedupConfig
 from immich_dedup.core.models import User
 
@@ -40,6 +40,15 @@ def run_preflight(client: ImmichClient, config: DedupConfig) -> PreflightReport:
             me = client.get_me(handle)
         except ImmichAuthError as error:
             checks.append(Check(f"{label} API key", False, str(error)))
+            return None
+        except ImmichApiError as error:
+            checks.append(
+                Check(
+                    f"{label} connection",
+                    False,
+                    f"could not reach Immich as {label}: {error}",
+                )
+            )
             return None
         actual_email = me.get("email", "").strip().lower()
         if actual_email != expected_email:

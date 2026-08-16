@@ -30,6 +30,7 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
   const [error, setError] = useState<string | null>(null)
 
   const effectiveCount = limit ? Math.min(Number(limit), stats.eligible_count) : stats.eligible_count
+  const trashedEstimate = stats.per_user.reduce((sum, user) => sum + user.trashed_files, 0)
 
   async function startApply() {
     try {
@@ -50,7 +51,7 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
     <div className="flex flex-col gap-3">
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="grid gap-1.5">
-          <Label htmlFor="limit">Limit (pairs)</Label>
+          <Label htmlFor="limit">Limit (groups)</Label>
           <Input
             id="limit"
             type="number"
@@ -93,21 +94,22 @@ export function ApplyPanel({ stats, disabled, onStarted }: ApplyPanelProps) {
           <DialogHeader>
             <DialogTitle>Apply cross-user dedup?</DialogTitle>
             <DialogDescription>
-              This will process <strong>{effectiveCount}</strong> pair
+              This will process <strong>{effectiveCount}</strong> group
               {effectiveCount === 1 ? "" : "s"}:
             </DialogDescription>
           </DialogHeader>
           <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
             <li>
-              The primary user&apos;s copy joins every album that contained the secondary user&apos;s
-              copy ({stats.affected_albums} albums affected overall).
+              The primary user&apos;s copy joins every album that contained another user&apos;s copy
+              ({stats.affected_albums} albums affected overall).
             </li>
             <li>
-              The secondary user&apos;s copies move to the trash (~
-              {humanBytes(stats.reclaimable_bytes)} reclaimable after purge).
+              ~{trashedEstimate} duplicate assets from {stats.per_user.length} other user
+              {stats.per_user.length === 1 ? "" : "s"} move to the trash — each trashed with that
+              user&apos;s own API key (~{humanBytes(stats.reclaimable_bytes)} reclaimable after purge).
             </li>
             <li>
-              Live photos: {motionPolicy === "trash" ? "loser still + motion trashed together" : "asymmetric pairs skipped"}
+              Live photos: {motionPolicy === "trash" ? "loser still + motion trashed together" : "asymmetric copies skipped"}
               {mergeMetadata ? "; favorites/descriptions merged onto keepers" : ""}.
             </li>
             <li>Everything is journaled and reversible via Undo until Immich purges the trash.</li>

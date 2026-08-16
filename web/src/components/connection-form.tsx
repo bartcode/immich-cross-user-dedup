@@ -1,10 +1,16 @@
 import { useState } from "react"
-import { CheckCircle2, Loader2, PlugZap, XCircle } from "lucide-react"
+import { CheckCircle2, Info, Loader2, PlugZap, Plus, Trash2, XCircle } from "lucide-react"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { api, type ConfigDto } from "@/lib/api"
+
+interface SecondaryRow {
+  email: string
+  apiKey: string
+}
 
 interface ConnectionFormProps {
   current: ConfigDto | null
@@ -14,12 +20,19 @@ interface ConnectionFormProps {
 export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
   const [url, setUrl] = useState(current?.immich_url ?? "")
   const [primaryEmail, setPrimaryEmail] = useState(current?.primary_email ?? "")
-  const [secondaryEmail, setSecondaryEmail] = useState(current?.secondary_email ?? "")
   const [primaryKey, setPrimaryKey] = useState("")
-  const [secondaryKey, setSecondaryKey] = useState("")
+  const [secondaries, setSecondaries] = useState<SecondaryRow[]>(
+    current?.secondaries.map((secondary) => ({ email: secondary.email, apiKey: "" })) ?? [
+      { email: "", apiKey: "" },
+    ],
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ConfigDto | null>(null)
+
+  function updateSecondary(index: number, patch: Partial<SecondaryRow>) {
+    setSecondaries((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
+  }
 
   async function save() {
     setBusy(true)
@@ -28,12 +41,13 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
       const payload = await api.setConfig({
         immich_url: url,
         primary_email: primaryEmail,
-        secondary_email: secondaryEmail,
         primary_api_key: primaryKey,
-        secondary_api_key: secondaryKey,
+        secondaries: secondaries
+          .filter((row) => row.email.trim())
+          .map((row) => ({ email: row.email, api_key: row.apiKey })),
       })
       setResult(payload)
-      if (payload.configured && payload.partners_bidirectional) {
+      if (payload.configured && payload.partners_ok) {
         onConfigured()
       }
     } catch (cause) {
@@ -43,16 +57,22 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
     }
   }
 
+  const canSave =
+    url.trim() !== "" &&
+    primaryEmail.trim() !== "" &&
+    secondaries.some((row) => row.email.trim() !== "")
+
   return (
     <Card className="mx-auto w-full max-w-xl">
       <CardHeader>
         <CardTitle>Connect to your Immich server</CardTitle>
         <CardDescription>
-          Needs the URL you use in the browser, both users&apos; emails, and an API key per user
-          (Immich → Account Settings → API Keys). Saved to your local .env.
+          One primary user (keeps the copies) plus every secondary user whose duplicates should be
+          removed. Needs an API key per user (Immich → Account Settings → API Keys). Saved to your
+          local .env.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-3">
+      <CardContent className="grid gap-4">
         <div className="grid gap-1.5">
           <Label htmlFor="url">Immich URL</Label>
           <Input
@@ -62,46 +82,89 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
             onChange={(event) => setUrl(event.target.value)}
           />
         </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="primary-email">Primary email (keeps the photos)</Label>
-          <Input
-            id="primary-email"
-            type="email"
-            placeholder="alice@example.com"
-            value={primaryEmail}
-            onChange={(event) => setPrimaryEmail(event.target.value)}
-          />
+
+        <div className="grid gap-1.5 rounded-md border p-3">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="primary-email">Primary — keeps the photos</Label>
+          </div>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            <Input
+              id="primary-email"
+              type="email"
+              placeholder="alice@example.com"
+              value={primaryEmail}
+              onChange={(event) => setPrimaryEmail(event.target.value)}
+            />
+            <Input
+              type="password"
+              placeholder={current?.primary_key_set ? "API key (unchanged)" : "API key"}
+              value={primaryKey}
+              onChange={(event) => setPrimaryKey(event.target.value)}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Lists this user&apos;s library, joins their copy to albums they own, and optionally merges
+            favorites/descriptions onto their copies. <strong>Nothing is ever deleted with this key.</strong>
+          </p>
         </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="primary-key">Primary API key</Label>
-          <Input
-            id="primary-key"
-            type="password"
-            placeholder={current?.primary_key_set ? "unchanged" : "from Immich settings"}
-            value={primaryKey}
-            onChange={(event) => setPrimaryKey(event.target.value)}
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="secondary-email">Secondary email (duplicates get trashed)</Label>
-          <Input
-            id="secondary-email"
-            type="email"
-            placeholder="bob@example.com"
-            value={secondaryEmail}
-            onChange={(event) => setSecondaryEmail(event.target.value)}
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="secondary-key">Secondary API key</Label>
-          <Input
-            id="secondary-key"
-            type="password"
-            placeholder={current?.secondary_key_set ? "unchanged" : "from Immich settings"}
-            value={secondaryKey}
-            onChange={(event) => setSecondaryKey(event.target.value)}
-          />
-        </div>
+
+        {secondaries.map((row, index) => (
+          <div key={index} className="grid gap-1.5 rounded-md border p-3">
+            <div className="flex items-center justify-between">
+              <Label>Secondary — duplicates get trashed</Label>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                aria-label="Remove secondary user"
+                onClick={() => setSecondaries((rows) => rows.filter((_, i) => i !== index))}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              <Input
+                type="email"
+                placeholder="bob@example.com"
+                value={row.email}
+                onChange={(event) => updateSecondary(index, { email: event.target.value })}
+              />
+              <Input
+                type="password"
+                placeholder={
+                  current?.secondaries.find((s) => s.email === row.email)?.key_set
+                    ? "API key (unchanged)"
+                    : "API key"
+                }
+                value={row.apiKey}
+                onChange={(event) => updateSecondary(index, { apiKey: event.target.value })}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Lists this user&apos;s library, adds the keeper to albums this user owns, and moves{" "}
+              <strong>this user&apos;s own</strong> duplicates to trash (restorable via undo). Never
+              touches anyone else&apos;s assets.
+            </p>
+          </div>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          className="justify-self-start"
+          onClick={() => setSecondaries((rows) => [...rows, { email: "", apiKey: "" }])}
+        >
+          <Plus /> Add secondary user
+        </Button>
+
+        <Alert>
+          <Info className="size-4" />
+          <AlertTitle>What API keys can do</AlertTitle>
+          <AlertDescription>
+            Immich API keys act with the full permissions of their user account — no admin account is
+            needed. This tool never hard-deletes (only trash, restorable), never modifies other
+            users&apos; assets, and never changes server settings.
+          </AlertDescription>
+        </Alert>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -122,7 +185,7 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
           </ul>
         )}
 
-        <Button onClick={save} disabled={busy || !url || !primaryEmail || !secondaryEmail}>
+        <Button onClick={save} disabled={busy || !canSave}>
           {busy ? <Loader2 className="animate-spin" /> : <PlugZap />} Save &amp; check connection
         </Button>
       </CardContent>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { RefreshCw, ScanSearch, Settings } from "lucide-react"
 import { ApplyPanel } from "@/components/apply-panel"
 import { ConnectionForm } from "@/components/connection-form"
@@ -44,7 +44,6 @@ export default function App() {
   const [offset, setOffset] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const pollRef = useRef<number | null>(null)
 
   const busy = job?.running ?? false
 
@@ -91,7 +90,6 @@ export default function App() {
         })
         .catch(() => undefined)
     }, 1000)
-    pollRef.current = timer
     return () => window.clearInterval(timer)
   }, [busy])
 
@@ -137,7 +135,8 @@ export default function App() {
           {config && (
             <p className="text-sm text-muted-foreground">
               {config.primary_email} <span className="text-xs">(keeps)</span> ← dedup with →{" "}
-              {config.secondary_email} <span className="text-xs">(trash)</span> ·{" "}
+              {config.secondaries.map((s) => s.email).join(", ")}{" "}
+              <span className="text-xs">(trash)</span> ·{" "}
               <a className="underline underline-offset-2" href={config.immich_url} target="_blank" rel="noreferrer">
                 {config.immich_url}
               </a>
@@ -146,8 +145,8 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           {config && (
-            <Badge variant={config.partners_bidirectional ? "secondary" : "destructive"}>
-              {config.partners_bidirectional ? "partner sharing OK" : "partner sharing missing"}
+            <Badge variant={config.partners_ok ? "secondary" : "destructive"}>
+              {config.partners_ok ? "partner sharing OK" : "partner sharing missing"}
             </Badge>
           )}
           <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
@@ -156,7 +155,7 @@ export default function App() {
                 <Settings /> Connection
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-xl">
+            <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Connection settings</DialogTitle>
                 <DialogDescription>
@@ -175,12 +174,12 @@ export default function App() {
           <AlertDescription>{configError}</AlertDescription>
         </Alert>
       )}
-      {config && !config.partners_bidirectional && (
+      {config && !config.partners_ok && (
         <Alert variant="destructive">
           <AlertTitle>Partner sharing is required</AlertTitle>
           <AlertDescription>
-            Album membership transfer across users needs partner sharing enabled in both directions
-            (Immich → Account Settings → Partner Sharing).
+            Album membership transfer needs partner sharing in both directions between the primary and
+            every secondary (Immich → Account Settings → Partner Sharing).
           </AlertDescription>
         </Alert>
       )}
@@ -227,15 +226,31 @@ export default function App() {
 
       {stats && (
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <StatCard label="Pairs found" value={stats.pair_count} />
+          <StatCard label="Groups found" value={stats.group_count} />
           <StatCard label="Eligible" value={stats.eligible_count} />
           <StatCard label="Excluded" value={stats.excluded_count} />
           <StatCard
             label="Live-photo cases"
             value={stats.live_photo_keeper_lacks_motion + stats.live_photo_loser_lacks_motion}
           />
-          <StatCard label="Albums affected" value={stats.affected_albums} />
+          <StatCard label="Skipped (no primary copy)" value={stats.skipped_no_primary} />
           <StatCard label="Reclaimable" value={humanBytes(stats.reclaimable_bytes)} />
+        </section>
+      )}
+
+      {stats && stats.per_user.length > 0 && (
+        <section className="grid gap-3 sm:grid-cols-3">
+          {stats.per_user.map((userStats) => (
+            <Card key={userStats.email} className="py-3">
+              <CardContent className="px-3">
+                <p className="truncate text-xs text-muted-foreground">{userStats.email}</p>
+                <p className="text-sm">
+                  {userStats.assets} assets · {userStats.trashed_files} to trash (
+                  {humanBytes(userStats.trashed_bytes)})
+                </p>
+              </CardContent>
+            </Card>
+          ))}
         </section>
       )}
 
@@ -248,11 +263,12 @@ export default function App() {
           </Button>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          Fetches both users&apos; assets and matches by checksum. Dry run — nothing is changed.
+          Fetches every user&apos;s assets and matches by checksum. Dry run — nothing is changed.
           {stats && (
             <span>
               {" "}
-              Last scan: {stats.primary_assets + stats.secondary_assets} assets across both libraries.
+              Last scan: {stats.primary_assets} primary +{" "}
+              {stats.per_user.reduce((sum, user) => sum + user.assets, 0)} secondary assets.
             </span>
           )}
         </CardContent>
@@ -260,7 +276,7 @@ export default function App() {
 
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">2 · Review pairs</CardTitle>
+          <CardTitle className="text-base">2 · Review groups</CardTitle>
           <div className="flex items-center gap-2">
             <Select
               value={filter}
@@ -274,7 +290,7 @@ export default function App() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="eligible">Eligible</SelectItem>
-                <SelectItem value="all">All pairs</SelectItem>
+                <SelectItem value="all">All groups</SelectItem>
                 <SelectItem value="excluded">Excluded</SelectItem>
                 <SelectItem value="live-photo">Live-photo cases</SelectItem>
               </SelectContent>
@@ -301,8 +317,8 @@ export default function App() {
           {!stats && <p className="px-4 py-6 text-sm text-muted-foreground">Run a scan first.</p>}
           {stats && pairs?.items.length === 0 && (
             <p className="px-4 py-6 text-sm text-muted-foreground">
-              No pairs for this filter
-              {filter === "eligible" && stats.pair_count > 0 ? " — everything excluded." : "."}
+              No groups for this filter
+              {filter === "eligible" && stats.group_count > 0 ? " — everything excluded." : "."}
             </p>
           )}
           {pairs?.items.map((pair) => (
@@ -367,6 +383,6 @@ function deriveStep(
     if (job.kind === "undo") return "done"
   }
   if (lastResult?.kind === "apply" || lastResult?.kind === "undo") return "done"
-  if (stats) return stats.pair_count > 0 ? "review" : "done"
+  if (stats) return stats.group_count > 0 ? "review" : "done"
   return "scan"
 }

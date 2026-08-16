@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from immich_dedup.core.config import DedupConfig, SecondaryCredentials  # noqa: E402
 from immich_dedup.web.app import create_app  # noqa: E402
-from immich_dedup.web.state import Session, build_client  # noqa: E402
-from tests.fakes.immich_api import FakeImmich  # noqa: E402
+from immich_dedup.web.state import Session  # noqa: E402
+from tests.fakes.immich_api import FakeImmich, make_client  # noqa: E402
 
 PRIMARY_EMAIL = "alice@example.com"
 SECONDARY_EMAILS = ("bob@example.com", "carol@example.com")
@@ -86,7 +86,9 @@ def main() -> None:
     args = parser.parse_args()
 
     fake, config = seed()
-    session = Session(config=config, client=build_client(config), reports_dir=Path("reports"))
+    keys = {config.primary_email: config.primary_api_key}
+    keys.update({secondary.email: secondary.api_key for secondary in config.secondaries})
+    session = Session(config=config, client=make_client(fake, keys), reports_dir=Path("reports"))
     app = create_app(session, web_dist=Path(__file__).resolve().parents[1] / "web" / "dist")
     print(
         f"Fake server on http://{args.host}:{args.port} "

@@ -37,28 +37,58 @@ generated thumbnails/previews/encoded videos, quota updates, stack maintenance.
 
 ### How media stays accessible to both users
 
-After dedup, each photo has exactly one owner (the primary user). The secondary
+After dedup, each photo has exactly one owner (the primary user). Every other
 user still sees all of it because:
 
-1. **Shared albums — automatic.** The keeper joins every album that contained
-   the loser, and albums can contain assets from multiple users in Immich. If
-   the secondary had the photo in "Summer trip", they still see it there.
+1. **Shared albums — automatic.** The keeper joins every album that contained a
+   loser, and albums can contain assets from multiple users in Immich. If a
+   secondary had the photo in "Summer trip", they still see it there.
 2. **Partner sharing — prerequisite.** Cross-user album additions require
-   partner sharing between the two users (Immich → Account Settings → Partner
-   Sharing, both directions) — the pre-flight check enforces this. As a bonus,
-   partner sharing keeps the secondary user's *timeline* visibility of deduped
-   photos, not just album visibility.
-3. **Trade-offs.** The secondary loses direct ownership of the shared copies:
+   partner sharing between the primary and **every** secondary, in both
+   directions (a star around the primary) — the pre-flight check reports each
+   user's status individually. As a bonus, partner sharing keeps the
+   secondaries' *timeline* visibility of deduped photos, not just album
+   visibility.
+3. **Trade-offs.** The secondaries lose direct ownership of the shared copies:
    they can no longer independently trash/re-upload them, and their copies'
    face-detection samples disappear with the purge (the primary's copies keep
    theirs; people are per-owner in Immich).
 
+## Multiple users
+
+One primary plus any number of secondaries. Every user's library is scanned;
+checksum groups with a primary-owned copy become **one keeper + N losers**
+(processed independently per loser). Groups the primary never imported — only
+secondaries own a copy — are **skipped and reported** rather than deduplicated
+automatically, so no unexpected ownership decisions happen. Per-user stats show
+what apply would trash from each library.
+
 ## Prerequisites
 
 - Immich v2/v3 with API access enabled
-- An API key for **each** of the two users (Account Settings → API Keys)
-- Partner sharing enabled **in both directions** between the two users
+- An API key for the primary and for **every** secondary (Account Settings → API Keys)
+- Partner sharing between the primary and each secondary, in both directions
 - A current backup of your Immich instance (the tool only trashes, but still)
+
+## What each API key can do
+
+Immich API keys are not scoped — a key acts with the full permissions of its
+user account. No admin account is required. The exact calls this tool makes:
+
+| call | primary key | secondary keys |
+| --- | --- | --- |
+| `GET /users/me`, `GET /partners` (pre-flight) | ✓ | ✓ |
+| `POST /search/metadata` (list own library) | ✓ | ✓ |
+| `GET /albums?assetId` (find albums containing a copy) | ✓ | ✓ |
+| `GET /assets/{id}` + thumbnails (undo checks, previews) | ✓ | ✓ |
+| `PUT /assets/{id}` (merge favorites/descriptions onto keeper, and revert on undo) | ✓ | — |
+| `POST /albums/{id}/assets` / `DELETE` (albums that user owns) | ✓ | ✓ |
+| `DELETE /assets` with `force: false` (trash **own** copies only) | — | ✓ |
+| `POST /trash/restore/assets` (undo) | — | ✓ |
+
+The tool never issues hard deletes, never modifies another user's assets, and
+never touches server settings. The connection form in the web UI shows these
+permissions next to each key input.
 
 ## Setup
 
@@ -71,8 +101,10 @@ make setup
 ```
 
 For the **web UI** you can skip the `.env` entirely — run `make ui` and configure
-the connection (URL, emails, API keys) in the browser; it's saved to your local
-`.env` automatically. For the **CLI**, create the config file upfront:
+the connection (URL, primary, and any number of secondaries with their API
+keys) in the browser; it's saved to your local `.env` automatically. For the
+**CLI**, create the config file upfront (`SECONDARY_EMAILS` / `SECONDARY_API_KEYS`
+comma lists, or the legacy single `SECONDARY_EMAIL` / `SECONDARY_API_KEY`):
 
 ```sh
 cp .env.example .env   # fill in your values
@@ -105,6 +137,9 @@ uv run cross-user-dedup --apply
 uv run cross-user-dedup --apply --limit 20          # small batch first
 uv run cross-user-dedup --apply --merge-metadata    # favorites/descriptions
 uv run cross-user-dedup --apply --live-photo-motion skip  # keep asymmetric live photos
+
+# Extra secondary users on the command line (repeatable)
+uv run cross-user-dedup --secondary bob@example.com bobs-key --secondary carol@example.com carols-key
 
 # Undo an apply run (until Immich purges the trash)
 uv run cross-user-dedup --undo reports/dedup_apply_<timestamp>.jsonl

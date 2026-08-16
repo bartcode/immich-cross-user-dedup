@@ -4,14 +4,19 @@ export interface CheckDto {
   detail: string
 }
 
+export interface SecondaryConfigDto {
+  email: string
+  key_set: boolean
+  partner_ok: boolean
+}
+
 export interface ConfigDto {
   configured: boolean
   immich_url: string
   primary_email: string
-  secondary_email: string
   primary_key_set: boolean
-  secondary_key_set: boolean
-  partners_bidirectional: boolean
+  secondaries: SecondaryConfigDto[]
+  partners_ok: boolean
   checks: CheckDto[]
 }
 
@@ -26,12 +31,19 @@ export interface JobDto {
   finished_at: string | null
 }
 
+export interface PerUserStatsDto {
+  email: string
+  assets: number
+  trashed_files: number
+  trashed_bytes: number
+}
+
 export interface StatsDto {
   primary_email: string
-  secondary_email: string
+  secondary_emails: string[]
   primary_assets: number
-  secondary_assets: number
-  pair_count: number
+  group_count: number
+  skipped_no_primary: number
   excluded_count: number
   eligible_count: number
   reclaimable_assets: number
@@ -40,11 +52,12 @@ export interface StatsDto {
   live_photo_aligned: number
   live_photo_keeper_lacks_motion: number
   live_photo_loser_lacks_motion: number
+  per_user: PerUserStatsDto[]
 }
 
 export interface AssetDto {
   id: string
-  owner_role: string
+  owner_email: string
   type: string
   file_name: string
   taken_at: string | null
@@ -54,15 +67,19 @@ export interface AssetDto {
   is_live_photo: boolean
   url: string
   thumbnail_url: string
-  albums?: { id: string; name: string; owner_role: string }[]
+  albums?: { id: string; name: string; owner_email: string }[]
+}
+
+export interface LoserDto extends AssetDto {
+  live_photo: string
+  reclaimable_bytes: number
 }
 
 export interface PairDto {
   checksum: string
   excluded: boolean
-  live_photo: string
   keeper: AssetDto
-  loser: AssetDto
+  losers: LoserDto[]
   reclaimable_bytes: number
 }
 
@@ -86,16 +103,6 @@ export interface JournalDetailDto {
     album_adds: number
     metadata_merges: number
   }
-}
-
-export interface UndoResultDto {
-  kind: string
-  restored_assets?: number
-  unrestorable?: string[]
-  album_rows_removed?: number
-  album_rows_kept?: number
-  metadata_restored?: number
-  errors?: string[]
 }
 
 export interface JobStatusResponse {
@@ -127,9 +134,8 @@ export const api = {
   setConfig: (body: {
     immich_url: string
     primary_email: string
-    secondary_email: string
     primary_api_key?: string
-    secondary_api_key?: string
+    secondaries: { email: string; api_key?: string }[]
   }) => request<ConfigDto>("/api/config", { method: "POST", body: JSON.stringify(body) }),
   scan: () => request<JobDto>("/api/scan", { method: "POST" }),
   job: () => request<JobStatusResponse>("/api/job"),

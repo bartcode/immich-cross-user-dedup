@@ -1,10 +1,23 @@
 import { ExternalLink, Star } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
-import { humanBytes, type AssetDto, type PairDto } from "@/lib/api"
+import { humanBytes, type AssetDto, type LoserDto, type PairDto } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-function AssetThumb({ asset, label }: { asset: AssetDto; label: string }) {
+function ownerBadge(email: string): string {
+  const local = email.split("@")[0] ?? email
+  return local.charAt(0).toUpperCase() + local.slice(1, 7)
+}
+
+function AssetThumb({
+  asset,
+  label,
+  badgeClass,
+}: {
+  asset: AssetDto
+  label: string
+  badgeClass: string
+}) {
   return (
     <a
       href={asset.url}
@@ -19,13 +32,8 @@ function AssetThumb({ asset, label }: { asset: AssetDto; label: string }) {
         loading="lazy"
         className="size-full object-cover"
       />
-      <span
-        className={cn(
-          "absolute top-1 left-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
-          asset.owner_role === "primary" ? "bg-emerald-600 text-white" : "bg-orange-600 text-white",
-        )}
-      >
-        {asset.owner_role}
+      <span className={cn("absolute top-1 left-1 rounded px-1.5 py-0.5 text-[10px] font-semibold", badgeClass)}>
+        {ownerBadge(asset.owner_email)}
       </span>
       {asset.is_favorite && (
         <Star className="absolute right-1 bottom-1 size-3.5 fill-yellow-400 text-yellow-400" />
@@ -40,31 +48,45 @@ interface PairRowProps {
   onToggle: (pair: PairDto) => void
 }
 
+function loserIssues(loser: LoserDto): string[] {
+  const issues: string[] = []
+  if (loser.live_photo === "keeper-lacks-motion") issues.push("keeper lacks motion")
+  if (loser.live_photo === "loser-lacks-motion") issues.push("loser lacks motion")
+  return issues
+}
+
 export function PairRow({ pair, onToggle }: PairRowProps) {
+  const albumNames = pair.losers.flatMap((loser) => loser.albums?.map((album) => album.name) ?? [])
+  const issues = pair.losers.flatMap(loserIssues)
+  const loserBytes = pair.losers.reduce((sum, loser) => sum + loser.size_bytes, 0)
+
   return (
     <div className="flex items-center gap-4 border-b px-4 py-3 last:border-b-0">
       <div className="flex items-center gap-2">
-        <AssetThumb asset={pair.keeper} label="keeper" />
+        <AssetThumb asset={pair.keeper} label="keeper" badgeClass="bg-emerald-600 text-white" />
         <div className="text-xs text-muted-foreground">=</div>
-        <AssetThumb asset={pair.loser} label="loser" />
+        {pair.losers.map((loser) => (
+          <AssetThumb key={loser.id} asset={loser} label="loser" badgeClass="bg-orange-600 text-white" />
+        ))}
       </div>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="truncate font-medium">{pair.keeper.file_name}</span>
           {pair.keeper.type === "VIDEO" && <Badge variant="outline">video</Badge>}
-          {pair.live_photo !== "aligned" && (
-            <Badge variant="destructive">
-              {pair.live_photo === "keeper-lacks-motion" ? "keeper lacks motion" : "loser lacks motion"}
+          {issues.map((issue) => (
+            <Badge key={issue} variant="destructive">
+              {issue}
             </Badge>
-          )}
+          ))}
+          <Badge variant="secondary">
+            {pair.losers.length} duplicate{pair.losers.length === 1 ? "" : "s"}
+          </Badge>
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
           {pair.keeper.taken_at ? new Date(pair.keeper.taken_at).toLocaleString() : "unknown date"} ·{" "}
-          {humanBytes(pair.loser.size_bytes)} reclaimable
-          {pair.loser.albums && pair.loser.albums.length > 0 && (
-            <> · in {pair.loser.albums.map((a) => a.name).join(", ")}</>
-          )}
+          {humanBytes(loserBytes)} reclaimable
+          {albumNames.length > 0 && <> · in {albumNames.join(", ")}</>}
         </div>
       </div>
 
