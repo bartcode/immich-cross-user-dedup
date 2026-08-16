@@ -244,6 +244,91 @@ export default function App() {
     </div>
   )
 
+  // progress + result of one job kind, rendered inside the matching phase card
+  const jobPanel = (kind: "scan" | "apply" | "undo") => (
+    <div className="mt-3 grid gap-3">
+      {busy && job?.kind === kind && (
+        <div className="rounded-md border p-3">
+          <div className="mb-2 flex items-center justify-between text-sm font-medium">
+            <span className="capitalize">{job.stage}</span>
+            <span className="flex items-center gap-3">
+              <span className="text-muted-foreground">
+                {job.current}
+                {job.total !== null ? ` / ${job.total}` : ""}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => api.cancelJob().catch((cause) => setConfigError(String(cause)))}
+              >
+                <Square /> Stop
+              </Button>
+            </span>
+          </div>
+          <Progress value={job.total ? (job.current / job.total) * 100 : undefined} />
+        </div>
+      )}
+
+      {!busy && job?.kind === kind && job.error && (
+        <Alert variant="destructive">
+          <AlertTitle className="capitalize">{kind} failed</AlertTitle>
+          <AlertDescription className="font-mono text-xs">{job.error}</AlertDescription>
+        </Alert>
+      )}
+
+      {!busy && lastResult?.kind === kind && (
+        <Alert variant={lastResult.error_count || lastResult.aborted ? "destructive" : "default"}>
+          <AlertTitle>
+            {lastResult.headline ? (
+              <>
+                {String(lastResult.headline)}
+                {lastResult.error_count ? (
+                  <> — {Number(lastResult.error_count)} error{Number(lastResult.error_count) === 1 ? "" : "s"}</>
+                ) : null}
+              </>
+            ) : (
+              <span className="capitalize">
+                {kind} {lastResult.cancelled ? "cancelled" : "finished"}
+              </span>
+            )}
+          </AlertTitle>
+          <AlertDescription>
+            {lastResult.cancelled ? (
+              <>{String(lastResult.note ?? "")}</>
+            ) : (
+              <>
+                {typeof lastResult.summary === "string" && (
+                  <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                    {lastResult.summary}
+                  </pre>
+                )}
+                {typeof lastResult.summary !== "string" &&
+                  !Array.isArray(lastResult.error_samples) && (
+                    <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                      {JSON.stringify(lastResult, null, 2)}
+                    </pre>
+                  )}
+                {Array.isArray(lastResult.error_samples) && lastResult.error_samples.length > 0 && (
+                  <div className="mt-1">
+                    <p className="text-xs font-semibold">First errors:</p>
+                    <ul className="list-disc pl-4 text-xs">
+                      {lastResult.error_samples.map((sample, index) => (
+                        <li key={index} className="font-mono">{String(sample)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {typeof lastResult.note === "string" && lastResult.note && (
+                  <p className="mt-1 font-sans text-xs">{lastResult.note}</p>
+                )}
+              </>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+    </div>
+  )
+
   if (config && !config.configured) {
     return (
       <div className="mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-6 p-4 sm:p-6">
@@ -327,85 +412,6 @@ export default function App() {
 
       <StepsBar current={step} active={busy} />
 
-      {busy && job && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center justify-between text-sm font-medium">
-              <span className="capitalize">
-                {job.kind} · {job.stage}
-              </span>
-              <span className="flex items-center gap-3">
-                <span className="text-muted-foreground">
-                  {job.current}
-                  {job.total !== null ? ` / ${job.total}` : ""}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => api.cancelJob().catch((cause) => setConfigError(String(cause)))}
-                >
-                  <Square /> Stop
-                </Button>
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Progress value={job.total ? (job.current / job.total) * 100 : undefined} />
-          </CardContent>
-        </Card>
-      )}
-
-      {!busy && lastResult && (
-        <Alert variant={lastResult.error_count || lastResult.aborted ? "destructive" : "default"}>
-          <AlertTitle>
-            {lastResult.headline ? (
-              <>
-                {String(lastResult.headline)}
-                {lastResult.error_count ? (
-                  <> — {Number(lastResult.error_count)} error{Number(lastResult.error_count) === 1 ? "" : "s"}</>
-                ) : null}
-              </>
-            ) : (
-              <span className="capitalize">
-                {String(lastResult.kind)} {lastResult.cancelled ? "cancelled" : "finished"}
-              </span>
-            )}
-          </AlertTitle>
-          <AlertDescription>
-            {lastResult.cancelled ? (
-              <>{String(lastResult.note ?? "")}</>
-            ) : (
-              <>
-                {typeof lastResult.summary === "string" && (
-                  <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-                    {lastResult.summary}
-                  </pre>
-                )}
-                {typeof lastResult.summary !== "string" &&
-                  !Array.isArray(lastResult.error_samples) && (
-                    <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-                      {JSON.stringify(lastResult, null, 2)}
-                    </pre>
-                  )}
-                {Array.isArray(lastResult.error_samples) && lastResult.error_samples.length > 0 && (
-                  <div className="mt-1">
-                    <p className="text-xs font-semibold">First errors:</p>
-                    <ul className="list-disc pl-4 text-xs">
-                      {lastResult.error_samples.map((sample, index) => (
-                        <li key={index} className="font-mono">{String(sample)}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {typeof lastResult.note === "string" && lastResult.note && (
-                  <p className="mt-1 font-sans text-xs">{lastResult.note}</p>
-                )}
-              </>
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
-
       {stats && (
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <StatCard label="Groups found" value={stats.group_count} />
@@ -453,6 +459,7 @@ export default function App() {
               {stats.per_user.reduce((sum, user) => sum + user.assets, 0)} secondary assets.
             </span>
           )}
+          {jobPanel("scan")}
         </CardContent>
       </Card>
 
@@ -497,6 +504,7 @@ export default function App() {
           ) : (
             <p className="text-sm text-muted-foreground">Run a scan first.</p>
           )}
+          {jobPanel("apply")}
         </CardContent>
       </Card>
 
@@ -506,6 +514,7 @@ export default function App() {
         </CardHeader>
         <CardContent>
           <UndoPanel refreshKey={refreshKey} disabled={busy} onStarted={handleJobStarted} />
+          {jobPanel("undo")}
         </CardContent>
       </Card>
 
