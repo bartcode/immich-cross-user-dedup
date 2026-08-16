@@ -120,6 +120,26 @@ with side-by-side thumbnails and per-pair exclude toggles, an apply panel with a
 confirmation dialog, and an undo panel listing journals with a preview of what
 undo restores. One background job runs at a time, with live progress.
 
+### Running from another machine
+
+The tool talks only to the public Immich API, so it runs from any machine that
+can reach your Immich web UI — no SSH, database, or filesystem access needed.
+
+- **Immich reachable on your network** (LAN IP, domain, reverse proxy): just
+  clone, `make setup`, and set `IMMICH_URL` to the address you use in the
+  browser.
+- **Immich only exposed on its host**: forward the port over SSH and point the
+  tool at it: `ssh -L 2283:localhost:2283 user@immich-host`, then
+  `IMMICH_URL=http://localhost:2283`.
+- **UI on machine A, browser on machine B**: the UI binds to `127.0.0.1` by
+  default — tunnel it (`ssh -L 8642:127.0.0.1:8642 machine-a`) or bind wider
+  with `--host 0.0.0.0 --token SECRET` (always set a token when binding beyond
+  localhost).
+
+Thumbnails are fetched by the backend and proxied to your browser, so the
+browser only needs to reach the machine running the UI. API keys live only in
+your local `.env` — treat them like passwords.
+
 To use it from another machine, prefer an SSH tunnel over exposing the port:
 `ssh -L 8642:127.0.0.1:8642 your-server`.
 
