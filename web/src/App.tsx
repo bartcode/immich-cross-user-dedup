@@ -123,6 +123,22 @@ export default function App() {
     return () => window.clearInterval(timer)
   }, [busy])
 
+  // called by the apply/undo panels right after they started a job: pick up the
+  // running state so the progress card appears and polling begins (small jobs
+  // may already be finished — then just refresh the data)
+  const handleJobStarted = useCallback(() => {
+    api
+      .job()
+      .then((payload) => {
+        setJob(payload.job)
+        if (!payload.job.running) {
+          setLastResult(payload.last_result)
+          setRefreshKey((key) => key + 1)
+        }
+      })
+      .catch(() => undefined)
+  }, [])
+
   async function startScan() {
     try {
       await api.scan()
@@ -445,7 +461,7 @@ export default function App() {
         </CardHeader>
         <CardContent>
           {stats ? (
-            <ApplyPanel stats={stats} disabled={busy} onStarted={() => setRefreshKey((key) => key + 1)} />
+            <ApplyPanel stats={stats} disabled={busy} onStarted={handleJobStarted} />
           ) : (
             <p className="text-sm text-muted-foreground">Run a scan first.</p>
           )}
@@ -457,7 +473,7 @@ export default function App() {
           <CardTitle className="text-base">4 · Undo</CardTitle>
         </CardHeader>
         <CardContent>
-          <UndoPanel refreshKey={refreshKey} disabled={busy} onStarted={() => setRefreshKey((key) => key + 1)} />
+          <UndoPanel refreshKey={refreshKey} disabled={busy} onStarted={handleJobStarted} />
         </CardContent>
       </Card>
 
