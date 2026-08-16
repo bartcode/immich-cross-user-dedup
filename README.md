@@ -67,9 +67,19 @@ Requires [uv](https://docs.astral.sh/uv/) (Python 3.11+):
 ```sh
 git clone https://github.com/bartcode/immich-cross-user-dedup.git
 cd immich-cross-user-dedup
-uv sync
+make setup                # uv sync + frontend build
 cp .env.example .env   # fill in your values
 ```
+
+There's a `Makefile` for the common tasks — `make help` lists them:
+
+| command | what it does |
+| --- | --- |
+| `make ui` | run the web UI against your instance (`ARGS='--port 9000'` to customize) |
+| `make fake` | run the web UI against fake seeded data, no `.env` needed |
+| `make cli` | CLI dry-run report (`ARGS='--apply --limit 20'` to apply) |
+| `make test` / `make lint` | pytest / ruff + frontend lint |
+| `make build` | rebuild the frontend (commit `web/dist` afterwards) |
 
 The web frontend is pre-built (`web/dist`), so the server needs no Node.js.
 Set `IMMICH_URL` to a URL reachable from where you run the tool.
