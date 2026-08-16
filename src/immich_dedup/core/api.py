@@ -222,11 +222,18 @@ class ImmichClient:
         self._request(handle, "DELETE", f"/api/albums/{album_id}/user/{user_id}")
 
     def trash_assets(self, handle: str, asset_ids: list[str], *, force: bool = False) -> list[dict[str, Any]]:
-        return list(
-            self._request_json(
-                handle, "DELETE", "/api/assets", json={"ids": asset_ids, "force": force}
-            )
-        )
+        """Move assets to trash (or hard-delete with force).
+
+        Current Immich answers 204 No Content and fails the whole request when
+        any id is not owned by the caller; older servers returned per-id
+        results — both shapes are handled."""
+        response = self._request(handle, "DELETE", "/api/assets", json={"ids": asset_ids, "force": force})
+        if response.status_code == 204 or not response.content:
+            return [{"id": asset_id, "success": True} for asset_id in asset_ids]
+        try:
+            return list(response.json())
+        except ValueError:
+            return [{"id": asset_id, "success": True} for asset_id in asset_ids]
 
     def restore_assets(self, handle: str, asset_ids: list[str]) -> dict[str, Any]:
         return dict(

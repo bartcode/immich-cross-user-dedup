@@ -380,20 +380,23 @@ class FakeImmich:
     def _delete_assets(self, user: dict, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         force = body.get("force", False)
-        results = []
-        for asset_id in body.get("ids", []):
+        ids = body.get("ids", [])
+        # like the real server: requireAccess over ALL ids first — any missing,
+        # already-deleted, or foreign-owned id fails the entire request
+        for asset_id in ids:
             asset = self.assets.get(asset_id)
             if asset is None or asset["deleted"]:
-                results.append({"id": asset_id, "success": False, "error": "not_found"})
-            elif asset["ownerId"] != user["id"]:
-                results.append({"id": asset_id, "success": False, "error": "no_permission"})
-            else:
-                asset["trashed"] = True
-                if force:
-                    asset["deleted"] = True
-                    asset["deletedAt"] = _utcnow().isoformat()
-                results.append({"id": asset_id, "success": True})
-        return httpx.Response(200, json=results)
+                return httpx.Response(400, json={"message": f"Asset {asset_id} not found"})
+            if asset["ownerId"] != user["id"]:
+                return httpx.Response(403, json={"message": "Missing required permission: asset.delete"})
+        # then trash them all and answer 204 No Content (no per-id results)
+        for asset_id in ids:
+            asset = self.assets[asset_id]
+            asset["trashed"] = True
+            if force:
+                asset["deleted"] = True
+                asset["deletedAt"] = _utcnow().isoformat()
+        return httpx.Response(204)
 
     def _restore_assets(self, user: dict, request: httpx.Request) -> httpx.Response:
         count = 0

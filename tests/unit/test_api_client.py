@@ -104,17 +104,23 @@ def test_remove_album_assets(world, keys):
     assert world.album_asset_ids(album) == set()
 
 
-def test_trash_assets_owner_only(world, keys):
+def test_trash_assets_contract(world, keys):
+    """Current Immich: 204 No Content on success; any foreign id in the batch
+    fails the WHOLE request with 403."""
     client = make(world, keys)
     mine = world.add_asset(keys["s_id"], "mine")
     theirs = world.add_asset(keys["p_id"], "theirs")
 
-    results = client.trash_assets(S, [mine, theirs])
-    by_id = {r["id"]: r for r in results}
-    assert by_id[mine]["success"] is True
-    assert by_id[theirs]["error"] == "no_permission"
-    assert world.asset(mine)["trashed"] is True
+    # mixed ownership -> whole request rejected, nothing trashed
+    with pytest.raises(ImmichApiError, match="asset.delete"):
+        client.trash_assets(S, [mine, theirs])
+    assert world.asset(mine)["trashed"] is False
     assert world.asset(theirs)["trashed"] is False
+
+    # owned-only -> 204 with empty body, client reports success for all ids
+    results = client.trash_assets(S, [mine])
+    assert results == [{"id": mine, "success": True}]
+    assert world.asset(mine)["trashed"] is True
 
 
 def test_restore_assets_only_restores_owned_trashed(world, keys):
