@@ -5,8 +5,8 @@ header of the user it is made for. Endpoints used (Immich v3 API):
 
 - GET    /api/users/me
 - POST   /api/search/metadata          (paginated asset listing, withExif)
-- GET    /api/albums?assetId=...       (albums containing an asset)
-- POST   /api/albums/{id}/assets       (add assets to album)
+- GET    /api/albums[?assetId=...]     (list albums / albums containing an asset)
+- PUT    /api/albums/{id}/assets       (add assets to album; POST on older servers)
 - DELETE /api/albums/{id}/assets       (remove assets from album)
 - DELETE /api/assets                   (trash / hard-delete; {ids, force})
 - POST   /api/trash/restore/assets     (restore from trash)
@@ -163,11 +163,29 @@ class ImmichClient:
         payload = self._request_json(handle, "GET", "/api/albums", params={"assetId": asset_id})
         return list(payload) if isinstance(payload, list) else []
 
-    def add_album_assets(self, handle: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
-        """Returns one BulkIdResponseDto per asset id: {id, success, error?}."""
-        return list(
-            self._request_json(handle, "POST", f"/api/albums/{album_id}/assets", json={"ids": asset_ids})
+    def list_albums(self, handle: str) -> list[dict[str, Any]]:
+        payload = self._request_json(handle, "GET", "/api/albums")
+        return list(payload) if isinstance(payload, list) else []
+
+    def count_assets(self, handle: str) -> int:
+        """Single-page search probe: returns the total asset count for this user."""
+        payload = self._request_json(
+            handle, "POST", "/api/search/metadata", json={"page": 1, "size": 1, "withExif": False}
         )
+        return int(payload.get("assets", {}).get("total") or 0)
+
+    def add_album_assets(self, handle: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
+        """Returns one BulkIdResponseDto per asset id: {id, success, error?}.
+
+        Current Immich uses PUT for this route; older servers (v1/v2) used POST,
+        so we fall back on 404/405."""
+        body = {"ids": asset_ids}
+        try:
+            return list(self._request_json(handle, "PUT", f"/api/albums/{album_id}/assets", json=body))
+        except ImmichApiError as error:
+            if error.status_code in (404, 405):
+                return list(self._request_json(handle, "POST", f"/api/albums/{album_id}/assets", json=body))
+            raise
 
     def remove_album_assets(self, handle: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
         return list(

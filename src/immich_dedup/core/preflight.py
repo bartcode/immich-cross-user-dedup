@@ -85,6 +85,24 @@ def run_preflight(client: ImmichClient, config: DedupConfig) -> PreflightReport:
         report.secondaries.append(secondary)
         report.users[secondary.id] = secondary
 
+    # Probe the read scopes every key needs (asset.read via a one-page search,
+    # album.read via an album list) so missing scopes surface here — Immich's
+    # error names the exact missing permission. Write scopes (asset.delete,
+    # albumAsset.create/delete, asset.update) are exercised at apply time.
+    for user in [u for u in (report.primary, *report.secondaries) if u is not None]:
+        try:
+            assets = client.count_assets(user.email)
+            albums = len(client.list_albums(user.email))
+            checks.append(
+                Check(
+                    f"{user.email} scopes",
+                    True,
+                    f"asset.read + album.read verified ({assets} assets, {albums} albums visible)",
+                )
+            )
+        except ImmichApiError as error:
+            checks.append(Check(f"{user.email} scopes", False, str(error)))
+
     if report.primary is not None and report.secondaries:
         partners = client.get_partners(report.primary.email)
         shared_by = {p["id"] for p in partners.get("shared-by", [])}

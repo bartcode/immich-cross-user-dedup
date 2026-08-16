@@ -66,29 +66,54 @@ what apply would trash from each library.
 ## Prerequisites
 
 - Immich v2/v3 with API access enabled
-- An API key for the primary and for **every** secondary (Account Settings → API Keys)
+- An API key for the primary and for **every** secondary, with the scopes listed
+  under [API key scopes](#api-key-scopes) (Account Settings → API Keys)
 - Partner sharing between the primary and each secondary, in both directions
 - A current backup of your Immich instance (the tool only trashes, but still)
 
-## What each API key can do
+## API key scopes
 
-Immich API keys are not scoped — a key acts with the full permissions of its
-user account. No admin account is required. The exact calls this tool makes:
+When you create an API key in Immich (Account Settings → API Keys), you select
+which permission **scopes** it gets — a key can only call endpoints whose scope
+it carries (the `all` scope grants everything). No admin account is required.
+These are the scopes to select:
 
-| call | primary key | secondary keys |
-| --- | --- | --- |
-| `GET /users/me`, `GET /partners` (pre-flight) | ✓ | ✓ |
-| `POST /search/metadata` (list own library) | ✓ | ✓ |
-| `GET /albums?assetId` (find albums containing a copy) | ✓ | ✓ |
-| `GET /assets/{id}` + thumbnails (undo checks, previews) | ✓ | ✓ |
-| `PUT /assets/{id}` (merge favorites/descriptions onto keeper, and revert on undo) | ✓ | — |
-| `POST /albums/{id}/assets` / `DELETE` (albums that user owns) | ✓ | ✓ |
-| `DELETE /assets` with `force: false` (trash **own** copies only) | — | ✓ |
-| `POST /trash/restore/assets` (undo) | — | ✓ |
+**Primary key** — never deletes anything:
 
-The tool never issues hard deletes, never modifies another user's assets, and
-never touches server settings. The connection form in the web UI shows these
-permissions next to each key input.
+```text
+user.read · partner.read · asset.read · asset.view · album.read ·
+albumAsset.create · albumAsset.delete
+(+ asset.update only if you use --merge-metadata)
+```
+
+**Each secondary key** — same as the primary, plus the trash scope:
+
+```text
+user.read · partner.read · asset.read · asset.view · album.read ·
+albumAsset.create · albumAsset.delete · asset.delete
+```
+
+How the scopes map to the calls this tool makes:
+
+| call | scope | primary | secondaries |
+| --- | --- | --- | --- |
+| `GET /users/me` (pre-flight) | `user.read` | ✓ | ✓ |
+| `GET /partners` (pre-flight) | `partner.read` | ✓ | ✓ |
+| `POST /search/metadata` (list own library) | `asset.read` | ✓ | ✓ |
+| `GET /albums` (find albums containing a copy) | `album.read` | ✓ | ✓ |
+| `GET /assets/{id}` (undo checks) | `asset.read` | ✓ | ✓ |
+| `GET /assets/{id}/thumbnail` (previews) | `asset.view` | ✓ | ✓ |
+| `PUT /albums/{id}/assets` (keeper joins albums that user owns) | `albumAsset.create` | ✓ | ✓ |
+| `DELETE /albums/{id}/assets` (undo of those additions) | `albumAsset.delete` | ✓ | ✓ |
+| `PUT /assets/{id}` (merge favorites/descriptions, and revert on undo) | `asset.update` | optional | — |
+| `DELETE /assets` with `force: false` (trash **own** copies only) | `asset.delete` | — | ✓ |
+| `POST /trash/restore/assets` (undo) | `asset.delete` | — | ✓ |
+
+The read scopes (`user.read`, `partner.read`, `asset.read`, `album.read`) are
+verified per key by the pre-flight check — Immich's error message names any
+missing scope. The write scopes are exercised at apply time, and the tool never
+hard-deletes, never modifies another user's assets, and never changes server
+settings. The connection form in the web UI shows each key's scope list inline.
 
 ## Setup
 

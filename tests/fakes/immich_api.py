@@ -8,17 +8,38 @@ permission rules:
   must own the asset or be a partner of its owner (Immich's AssetShare permission).
 - Metadata search returns the caller's assets plus partner-shared ones when
   partner sharing has inTimeline enabled, excluding trashed/deleted/locked.
+- Per-API-key permission scopes (Immich's api_key.permissions): users created
+  with ``permissions=[...]`` are restricted to those scopes; a scope of
+  ``all`` (or ``permissions=None``, the default) grants everything. The
+  route-to-scope map mirrors the real server's @Authenticated decorators.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 
 BASE = "http://immich.test"
+
+# (method, path pattern) -> required api-key scope, mirroring Immich's controllers
+ROUTE_SCOPES: list[tuple[str, re.Pattern[str], str]] = [
+    ("GET", re.compile(r"^/api/users/me$"), "user.read"),
+    ("POST", re.compile(r"^/api/search/metadata$"), "asset.read"),
+    ("GET", re.compile(r"^/api/albums$"), "album.read"),
+    ("PUT", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.create"),
+    ("POST", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.create"),
+    ("DELETE", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.delete"),
+    ("DELETE", re.compile(r"^/api/assets$"), "asset.delete"),
+    ("POST", re.compile(r"^/api/trash/restore/assets$"), "asset.delete"),
+    ("PUT", re.compile(r"^/api/assets/[^/]+$"), "asset.update"),
+    ("GET", re.compile(r"^/api/assets/[^/]+/thumbnail$"), "asset.view"),
+    ("GET", re.compile(r"^/api/assets/[^/]+$"), "asset.read"),
+    ("GET", re.compile(r"^/api/partners$"), "partner.read"),
+]
 
 
 def _utcnow() -> datetime:
@@ -35,19 +56,20 @@ class FakeImmich:
 
     # -- test setup helpers -------------------------------------------------
 
-    def add_user(self, email: str, name: str = "") -> tuple[str, str]:
-        """Returns (user_id, api_key)."""
+    def add_user(self, email: str, name: str = "", permissions: list[str] | None = None) -> tuple[str, str]:
+        """Returns (user_id, api_key). ``permissions`` restricts the key to those
+        API scopes (None or containing 'all' = unrestricted)."""
         user_id, api_key = str(uuid.uuid4()), str(uuid.uuid4())
-        record = {"id": user_id, "email": email, "name": name}
+        record = {"id": user_id, "email": email, "name": name, "permissions": permissions}
         self.users[api_key] = record
         return user_id, api_key
 
-    def add_api_key(self, user_id: str) -> str:
+    def add_api_key(self, user_id: str, permissions: list[str] | None = None) -> str:
         """Mint an additional API key for an existing user."""
         for record in self.users.values():
             if record["id"] == user_id:
                 api_key = str(uuid.uuid4())
-                self.users[api_key] = record
+                self.users[api_key] = {**record, "permissions": permissions}
                 return api_key
         raise KeyError(user_id)
 
@@ -189,8 +211,18 @@ class FakeImmich:
         if user is None:
             return httpx.Response(401, json={"message": "Invalid API key"})
 
+        permissions = user.get("permissions")
+        if permissions is not None and "all" not in permissions:
+            for route_method, pattern, scope in ROUTE_SCOPES:
+                if route_method == method and pattern.match(path):
+                    if scope not in permissions:
+                        return httpx.Response(
+                            403, json={"message": f"Missing required permission: {scope}"}
+                        )
+                    break
+
         if method == "GET" and path == "/api/users/me":
-            return httpx.Response(200, json=dict(user))
+            return httpx.Response(200, json={k: v for k, v in user.items() if k != "permissions"})
 
         if method == "POST" and path == "/api/search/metadata":
             return self._search_metadata(user, request)
@@ -198,9 +230,9 @@ class FakeImmich:
         if method == "GET" and path == "/api/albums":
             return self._albums_list(user, request)
 
-        if method in ("POST", "DELETE") and path.startswith("/api/albums/") and path.endswith("/assets"):
+        if method in ("PUT", "POST", "DELETE") and path.startswith("/api/albums/") and path.endswith("/assets"):
             album_id = path.split("/")[3]
-            return self._album_assets(user, request, album_id, add=method == "POST")
+            return self._album_assets(user, request, album_id, add=method in ("PUT", "POST"))
 
         if method == "DELETE" and path == "/api/assets":
             return self._delete_assets(user, request)
@@ -271,7 +303,8 @@ class FakeImmich:
         albums = [
             self._album_response(album)
             for album in self.albums.values()
-            if asset_id in album["asset_ids"] and self.album_visible_to(album, user["id"])
+            if (asset_id is None or asset_id in album["asset_ids"])
+            and self.album_visible_to(album, user["id"])
         ]
         return httpx.Response(200, json=albums)
 

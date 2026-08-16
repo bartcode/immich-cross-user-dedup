@@ -7,6 +7,22 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { api, type ConfigDto } from "@/lib/api"
 
+const READ_SCOPES = ["user.read", "partner.read", "asset.read", "asset.view", "album.read"]
+const ALBUM_WRITE_SCOPES = ["albumAsset.create", "albumAsset.delete"]
+
+function ScopeList({ scopes }: { scopes: string[] }) {
+  return (
+    <span className="font-mono text-[11px] leading-4">
+      {scopes.map((scope, index) => (
+        <span key={scope}>
+          {index > 0 && <span className="text-muted-foreground"> · </span>}
+          {scope}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 interface SecondaryRow {
   email: string
   apiKey: string
@@ -103,8 +119,11 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            Lists this user&apos;s library, joins their copy to albums they own, and optionally merges
-            favorites/descriptions onto their copies. <strong>Nothing is ever deleted with this key.</strong>
+            Select these scopes for the key: <ScopeList scopes={[...READ_SCOPES, ...ALBUM_WRITE_SCOPES]} />{" "}
+            — plus <span className="font-mono text-[11px]">asset.update</span> if you will use
+            merge-metadata. Lists this user&apos;s library, joins their copy to albums they own, and
+            optionally merges favorites/descriptions onto their copies.{" "}
+            <strong>Nothing is ever deleted with this key.</strong>
           </p>
         </div>
 
@@ -141,7 +160,9 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              Lists this user&apos;s library, adds the keeper to albums this user owns, and moves{" "}
+              Select these scopes for the key:{" "}
+              <ScopeList scopes={[...READ_SCOPES, ...ALBUM_WRITE_SCOPES, "asset.delete"]} /> — lists
+              this user&apos;s library, adds the keeper to albums this user owns, and moves{" "}
               <strong>this user&apos;s own</strong> duplicates to trash (restorable via undo). Never
               touches anyone else&apos;s assets.
             </p>
@@ -158,11 +179,13 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
 
         <Alert>
           <Info className="size-4" />
-          <AlertTitle>What API keys can do</AlertTitle>
+          <AlertTitle>API key scopes</AlertTitle>
           <AlertDescription>
-            Immich API keys act with the full permissions of their user account — no admin account is
-            needed. This tool never hard-deletes (only trash, restorable), never modifies other
-            users&apos; assets, and never changes server settings.
+            When creating each key in Immich (Account Settings → API Keys), select the scopes listed
+            under the corresponding input — or simply the <span className="font-mono text-xs">all</span>{" "}
+            scope. Scopes grant exactly what the key can do; this tool never hard-deletes (only
+            trash, restorable), never modifies other users&apos; assets, and never changes server
+            settings. Read scopes are verified by the pre-flight check when you save.
           </AlertDescription>
         </Alert>
 
