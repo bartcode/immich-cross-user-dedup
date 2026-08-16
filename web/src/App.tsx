@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useState } from "react"
-import { Info, RefreshCw, ScanSearch, Settings, Square } from "lucide-react"
-import { ApplyPanel } from "@/components/apply-panel"
-import { ConnectionForm } from "@/components/connection-form"
-import { PairRow } from "@/components/pair-row"
-import { StepsBar, type StepId } from "@/components/steps-bar"
-import { UndoPanel } from "@/components/undo-panel"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { BadgeCheck, Images, Info, Link2, Play, ScanSearch, Settings } from "lucide-react"
+import { ApplyStep } from "@/components/steps/apply-step"
+import { ConnectStep } from "@/components/steps/connect-step"
+import { FinishStep } from "@/components/steps/finish-step"
+import { ReviewStep } from "@/components/steps/review-step"
+import { ScanStep } from "@/components/steps/scan-step"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -17,56 +16,39 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Progress } from "@/components/ui/progress"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { ConnectionForm } from "@/components/connection-form"
+import { WizardStepper, type StepDef } from "@/components/wizard-stepper"
 import {
   api,
-  humanBytes,
   type ConfigDto,
-  type JobStatusResponse,
-  type PairDto,
-  type PairsResponse,
+  type JobDto,
   type StatsDto,
 } from "@/lib/api"
 
-const PAGE_SIZE = 15
+type StepId = "connect" | "scan" | "review" | "apply" | "finish"
 
-/** Page numbers with ellipsis trimming: 1 … (current-1) current (current+1) … N */
-function pageList(current: number, total: number): (number | "…")[] {
-  if (total <= 7) {
-    return Array.from({ length: total }, (_, index) => index + 1)
-  }
-  const wanted = [1, 2, current - 1, current, current + 1, total - 1, total].filter(
-    (page) => page >= 1 && page <= total,
-  )
-  const unique = [...new Set(wanted)].sort((a, b) => a - b)
-  const result: (number | "…")[] = []
-  let previous = 0
-  for (const page of unique) {
-    if (page - previous > 1) result.push("…")
-    result.push(page)
-    previous = page
-  }
-  return result
-}
-
-type Filter = "eligible" | "all" | "excluded" | "live-photo"
-type Sort = "date-desc" | "date-asc" | "size-desc" | "size-asc"
+const STEPS: { id: StepId; label: string; icon: typeof Link2; accent: string }[] = [
+  { id: "connect", label: "Connect", icon: Link2, accent: "bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300" },
+  { id: "scan", label: "Scan", icon: ScanSearch, accent: "bg-blue-100 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300" },
+  { id: "review", label: "Review", icon: Images, accent: "bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300" },
+  { id: "apply", label: "Apply", icon: Play, accent: "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300" },
+  { id: "finish", label: "Finish", icon: BadgeCheck, accent: "bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-300" },
+]
 
 export default function App() {
   const [config, setConfig] = useState<ConfigDto | null>(null)
   const [configError, setConfigError] = useState<string | null>(null)
-  const [job, setJob] = useState<JobStatusResponse["job"] | null>(null)
+  const [job, setJob] = useState<JobDto | null>(null)
   const [stats, setStats] = useState<StatsDto | null>(null)
   const [lastResult, setLastResult] = useState<Record<string, unknown> | null>(null)
-  const [pairs, setPairs] = useState<PairsResponse | null>(null)
-  const [filter, setFilter] = useState<Filter>("eligible")
-  const [sort, setSort] = useState<Sort>("date-desc")
-  const [offset, setOffset] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [hasJournals, setHasJournals] = useState(false)
+  const [step, setStep] = useState<StepId>("scan")
 
   const busy = job?.running ?? false
+
+  // --- data loading ---------------------------------------------------------
 
   const reloadConfig = useCallback(() => {
     api
@@ -82,13 +64,6 @@ export default function App() {
       .catch((cause) => setConfigError(String(cause)))
   }, [])
 
-  const loadPairs = useCallback(() => {
-    api
-      .pairs(filter, offset, PAGE_SIZE, sort)
-      .then(setPairs)
-      .catch(() => setPairs(null))
-  }, [filter, offset, sort])
-
   useEffect(() => {
     api.config().then(setConfig).catch((cause) => setConfigError(String(cause)))
     // restore stats / last result after a page refresh (the backend keeps the scan)
@@ -100,11 +75,18 @@ export default function App() {
         setLastResult(payload.last_result)
       })
       .catch(() => undefined)
+    api
+      .journals()
+      .then((journals) => setHasJournals(journals.length > 0))
+      .catch(() => undefined)
   }, [])
 
-  useEffect(loadPairs, [loadPairs, refreshKey])
+  // unconfigured → connection step; connected → leave the connection step
+  useEffect(() => {
+    if (config && !config.configured) setStep("connect")
+  }, [config?.configured])
 
-  // poll the job while one is running; bump refreshKey when it finishes
+  // poll the job while one is running
   useEffect(() => {
     if (!busy) return
     const timer = window.setInterval(() => {
@@ -114,18 +96,14 @@ export default function App() {
           setJob(payload.job)
           setStats(payload.stats)
           setLastResult(payload.last_result)
-          if (!payload.job.running) {
-            setRefreshKey((key) => key + 1)
-          }
+          if (!payload.job.running) setRefreshKey((key) => key + 1)
         })
         .catch(() => undefined)
     }, 1000)
     return () => window.clearInterval(timer)
   }, [busy])
 
-  // called by the apply/undo panels right after they started a job: pick up the
-  // running state so the progress card appears and polling begins (small jobs
-  // may already be finished — then just refresh the data)
+  // called by the apply/undo panels right after they started a job
   const handleJobStarted = useCallback(() => {
     api
       .job()
@@ -139,6 +117,19 @@ export default function App() {
       .catch(() => undefined)
   }, [])
 
+  // auto-advance when a job finishes
+  const previousRun = useRef<{ kind: string | null; running: boolean } | null>(null)
+  useEffect(() => {
+    const current = { kind: job?.kind ?? null, running: busy }
+    const previous = previousRun.current
+    previousRun.current = current
+    if (!previous?.running || current.running || !current.kind || job?.error) return
+    if (current.kind === "scan") setStep("review")
+    else setStep("finish") // apply or undo
+  }, [busy, job?.kind, job?.error])
+
+  // --- actions --------------------------------------------------------------
+
   async function startScan() {
     try {
       await api.scan()
@@ -149,235 +140,66 @@ export default function App() {
     }
   }
 
-  async function togglePair(pair: PairDto) {
-    const action = pair.excluded ? api.include : api.exclude
-    await action(pair.checksum)
-    loadPairs()
+  const refreshStats = useCallback(() => {
     api.stats().then(setStats).catch(() => undefined)
-  }
+  }, [])
 
-  const step = deriveStep(job, stats, lastResult)
+  const updateJournalsPresence = useCallback(() => {
+    api
+      .journals()
+      .then((journals) => setHasJournals(journals.length > 0))
+      .catch(() => undefined)
+  }, [])
 
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1
-  const totalPages = pairs ? Math.max(1, Math.ceil(pairs.total / PAGE_SIZE)) : 1
+  useEffect(updateJournalsPresence, [updateJournalsPresence, refreshKey])
 
-  const goToPage = (page: number) => setOffset((page - 1) * PAGE_SIZE)
+  const navigate = useCallback((id: string) => setStep(id as StepId), [])
 
-  const pager = (
-    <div className="flex flex-wrap items-center gap-1">
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={!pairs || offset === 0}
-        onClick={() => goToPage(currentPage - 1)}
-      >
-        ← Prev
-      </Button>
-      {pairs &&
-        pageList(currentPage, totalPages).map((page, index) =>
-          page === "…" ? (
-            <span key={`ellipsis-${index}`} className="px-1 text-xs text-muted-foreground">
-              …
-            </span>
-          ) : (
-            <Button
-              key={page}
-              variant={page === currentPage ? "default" : "outline"}
-              size="sm"
-              className="min-w-8"
-              aria-label={`Go to page ${page}`}
-              aria-current={page === currentPage ? "page" : undefined}
-              onClick={() => goToPage(page)}
-            >
-              {page}
-            </Button>
-          ),
-        )}
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={!pairs || offset + PAGE_SIZE >= pairs.total}
-        onClick={() => goToPage(currentPage + 1)}
-      >
-        Next →
-      </Button>
-    </div>
+  // --- wizard gating ----------------------------------------------------------
+
+  const isReachable = useCallback(
+    (id: string): boolean => {
+      switch (id as StepId) {
+        case "connect":
+          return true
+        case "scan":
+          return !!config?.configured
+        case "review":
+        case "apply":
+          return !!stats
+        case "finish":
+          return !!lastResult || hasJournals
+      }
+    },
+    [config?.configured, stats, lastResult, hasJournals],
   )
 
-  const reviewControls = (
-    <div className="flex flex-wrap items-center gap-2">
-      <Select
-        value={filter}
-        onValueChange={(value) => {
-          setFilter(value as Filter)
-          setOffset(0)
-        }}
-      >
-        <SelectTrigger className="w-44" aria-label="Filter groups">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="eligible">Eligible</SelectItem>
-          <SelectItem value="all">All groups</SelectItem>
-          <SelectItem value="excluded">Excluded</SelectItem>
-          <SelectItem value="live-photo">Live-photo cases</SelectItem>
-        </SelectContent>
-      </Select>
-      <Select
-        value={sort}
-        onValueChange={(value) => {
-          setSort(value as Sort)
-          setOffset(0)
-        }}
-      >
-        <SelectTrigger className="w-44" aria-label="Sort groups">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="date-desc">Newest first</SelectItem>
-          <SelectItem value="date-asc">Oldest first</SelectItem>
-          <SelectItem value="size-desc">Largest first</SelectItem>
-          <SelectItem value="size-asc">Smallest first</SelectItem>
-        </SelectContent>
-      </Select>
-      {pager}
-    </div>
-  )
+  const stepDefs: StepDef[] = STEPS.map((entry) => ({
+    ...entry,
+    done:
+      (entry.id === "scan" && !!stats) ||
+      (entry.id === "review" && (lastResult?.kind === "apply" || lastResult?.kind === "undo")) ||
+      (entry.id === "apply" && lastResult?.kind === "apply") ||
+      (entry.id === "connect" && !!config?.configured),
+  }))
 
-  // progress + result of one job kind, rendered inside the matching phase card
-  const jobPanel = (kind: "scan" | "apply" | "undo") => (
-    <div className="mt-3 grid gap-3">
-      {busy && job?.kind === kind && (
-        <div className="rounded-md border p-3">
-          <div className="mb-2 flex items-center justify-between text-sm font-medium">
-            <span className="capitalize">{job.stage}</span>
-            <span className="flex items-center gap-3">
-              <span className="text-muted-foreground">
-                {job.current}
-                {job.total !== null ? ` / ${job.total}` : ""}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => api.cancelJob().catch((cause) => setConfigError(String(cause)))}
-              >
-                <Square /> Stop
-              </Button>
-            </span>
-          </div>
-          <Progress value={job.total ? (job.current / job.total) * 100 : undefined} />
-        </div>
-      )}
+  const currentIndex = STEPS.findIndex((entry) => entry.id === step)
+  const nextStep = currentIndex < STEPS.length - 1 ? STEPS[currentIndex + 1] : null
+  const prevStep = currentIndex > 0 ? STEPS[currentIndex - 1] : null
 
-      {!busy && job?.kind === kind && job.error && (
-        <Alert variant="destructive">
-          <AlertTitle className="capitalize">{kind} failed</AlertTitle>
-          <AlertDescription className="font-mono text-xs">{job.error}</AlertDescription>
-        </Alert>
-      )}
-
-      {!busy && lastResult?.kind === kind && (
-        <Alert variant={lastResult.error_count || lastResult.aborted ? "destructive" : "default"}>
-          <AlertTitle>
-            {lastResult.headline ? (
-              <>
-                {String(lastResult.headline)}
-                {lastResult.error_count ? (
-                  <> — {Number(lastResult.error_count)} error{Number(lastResult.error_count) === 1 ? "" : "s"}</>
-                ) : null}
-              </>
-            ) : (
-              <span className="capitalize">
-                {kind} {lastResult.cancelled ? "cancelled" : "finished"}
-              </span>
-            )}
-          </AlertTitle>
-          <AlertDescription>
-            {lastResult.cancelled ? (
-              <>{String(lastResult.note ?? "")}</>
-            ) : (
-              <>
-                {typeof lastResult.summary === "string" && (
-                  <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-                    {lastResult.summary}
-                  </pre>
-                )}
-                {typeof lastResult.summary !== "string" &&
-                  !Array.isArray(lastResult.error_samples) && (
-                    <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-                      {JSON.stringify(lastResult, null, 2)}
-                    </pre>
-                  )}
-                {Array.isArray(lastResult.error_samples) && lastResult.error_samples.length > 0 && (
-                  <div className="mt-1">
-                    <p className="text-xs font-semibold">First errors:</p>
-                    <ul className="list-disc pl-4 text-xs">
-                      {lastResult.error_samples.map((sample, index) => (
-                        <li key={index} className="font-mono">{String(sample)}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {lastResult.album_failure_reasons &&
-                  Object.keys(lastResult.album_failure_reasons).length > 0 && (
-                    <div className="mt-1">
-                      <p className="text-xs font-semibold">Album failures by reason:</p>
-                      <ul className="list-disc pl-4 text-xs">
-                        {Object.entries(lastResult.album_failure_reasons).map(([reason, count]) => (
-                          <li key={reason} className="font-mono">
-                            {String(count)}× {reason}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                {lastResult.blocked_owners && Object.keys(lastResult.blocked_owners).length > 0 && (
-                  <div className="mt-1">
-                    <p className="text-xs font-semibold">Blocked users (their copies were kept):</p>
-                    <ul className="list-disc pl-4 text-xs">
-                      {Object.entries(lastResult.blocked_owners).map(([owner, reason]) => (
-                        <li key={owner}>
-                          <span className="font-semibold">{owner}</span> — {String(reason)}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {typeof lastResult.note === "string" && lastResult.note && (
-                  <p className="mt-1 font-sans text-xs">{lastResult.note}</p>
-                )}
-              </>
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
-    </div>
-  )
-
-  if (config && !config.configured) {
-    return (
-      <div className="mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-6 p-4 sm:p-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Immich cross-user dedup</h1>
-        {configError && (
-          <Alert variant="destructive">
-            <AlertTitle>Backend error</AlertTitle>
-            <AlertDescription>{configError}</AlertDescription>
-          </Alert>
-        )}
-        <ConnectionForm current={config} onConfigured={reloadConfig} />
-      </div>
-    )
-  }
+  // --- render ----------------------------------------------------------------
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-6 p-4 sm:p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Immich cross-user dedup</h1>
-          {config && (
+          <h1 className="bg-gradient-to-r from-violet-500 via-blue-500 to-emerald-500 bg-clip-text text-2xl font-semibold tracking-tight text-transparent dark:from-violet-400 dark:via-blue-400 dark:to-emerald-400">
+            Immich cross-user dedup
+          </h1>
+          {config?.configured && (
             <p className="text-sm text-muted-foreground">
               {config.primary_email} <span className="text-xs">(keeps)</span> ← dedup with →{" "}
-              {config.secondaries.map((s) => s.email).join(", ")}{" "}
+              {config.secondaries.map((secondary) => secondary.email).join(", ")}{" "}
               <span className="text-xs">(trash)</span> ·{" "}
               <a className="underline underline-offset-2" href={config.immich_url} target="_blank" rel="noreferrer">
                 {config.immich_url}
@@ -386,27 +208,29 @@ export default function App() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {config && (
+          {config?.configured && (
             <Badge variant={config.partners_ok ? "secondary" : "outline"}>
               {config.partners_ok ? "partner sharing: direct transfers" : "album-editor sharing"}
             </Badge>
           )}
-          <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline" size="sm" disabled={busy}>
-                <Settings /> Connection
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Connection settings</DialogTitle>
-                <DialogDescription>
-                  Changing these resets the current session (scan results and exclusions).
-                </DialogDescription>
-              </DialogHeader>
-              <ConnectionForm current={config} onConfigured={reloadConfig} />
-            </DialogContent>
-          </Dialog>
+          {config?.configured && (
+            <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" disabled={busy}>
+                  <Settings /> Connection
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-h-[85vh] max-w-xl overflow-y-auto">
+                <DialogHeader>
+                  <DialogTitle>Connection settings</DialogTitle>
+                  <DialogDescription>
+                    Changing these resets the current session (scan results and exclusions).
+                  </DialogDescription>
+                </DialogHeader>
+                <ConnectionForm current={config} onConfigured={reloadConfig} />
+              </DialogContent>
+            </Dialog>
+          )}
         </div>
       </header>
 
@@ -416,15 +240,14 @@ export default function App() {
           <AlertDescription>{configError}</AlertDescription>
         </Alert>
       )}
-      {config && !config.partners_ok && (
+      {config?.configured && !config.partners_ok && (
         <Alert>
           <Info className="size-4" />
           <AlertTitle>Partner sharing is not enabled — that&apos;s fine</AlertTitle>
           <AlertDescription>
             Affected albums will be shared with the primary as <strong>editor</strong> during apply
             (revoked on undo), so nobody gets access to anyone&apos;s full library. Enable partner
-            sharing in Immich only if the secondaries should also see the primary&apos;s entire
-            timeline.
+            sharing in Immich only if the secondaries should also see the primary&apos;s entire timeline.
           </AlertDescription>
         </Alert>
       )}
@@ -435,143 +258,68 @@ export default function App() {
         </Alert>
       )}
 
-      <StepsBar current={step} active={busy} />
+      <WizardStepper steps={stepDefs} current={step} isReachable={isReachable} onSelect={navigate} />
 
-      {stats && (
-        <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <StatCard label="Groups found" value={stats.group_count} />
-          <StatCard label="Eligible" value={stats.eligible_count} />
-          <StatCard label="Excluded" value={stats.excluded_count} />
-          <StatCard
-            label="Live-photo cases"
-            value={stats.live_photo_keeper_lacks_motion + stats.live_photo_loser_lacks_motion}
+      <main className="flex-1">
+        {step === "connect" && <ConnectStep config={config} onConfigured={reloadConfig} />}
+        {step === "scan" && (
+          <ScanStep
+            stats={stats}
+            job={job}
+            busy={busy}
+            lastResult={lastResult}
+            onScan={startScan}
+            onNavigate={navigate}
+            onError={setConfigError}
           />
-          <StatCard label="Skipped (no primary copy)" value={stats.skipped_no_primary} />
-          <StatCard label="Reclaimable" value={humanBytes(stats.reclaimable_bytes)} />
-        </section>
-      )}
+        )}
+        {step === "review" && (
+          <ReviewStep stats={stats} refreshKey={refreshKey} onNavigate={navigate} onStatsRefresh={refreshStats} />
+        )}
+        {step === "apply" && (
+          <ApplyStep
+            stats={stats}
+            job={job}
+            busy={busy}
+            lastResult={lastResult}
+            onJobStarted={handleJobStarted}
+            onNavigate={navigate}
+            onError={setConfigError}
+          />
+        )}
+        {step === "finish" && (
+          <FinishStep
+            job={job}
+            busy={busy}
+            lastResult={lastResult}
+            refreshKey={refreshKey}
+            onJobStarted={handleJobStarted}
+            onNavigate={navigate}
+            onRescan={() => {
+              navigate("scan")
+              startScan()
+            }}
+            onError={setConfigError}
+          />
+        )}
+      </main>
 
-      {stats && stats.per_user.length > 0 && (
-        <section className="grid gap-3 sm:grid-cols-3">
-          {stats.per_user.map((userStats) => (
-            <Card key={userStats.email} className="py-3">
-              <CardContent className="px-3">
-                <p className="truncate text-xs text-muted-foreground">{userStats.email}</p>
-                <p className="text-sm">
-                  {userStats.assets} assets · {userStats.trashed_files} to trash (
-                  {humanBytes(userStats.trashed_bytes)})
-                </p>
-              </CardContent>
-            </Card>
-          ))}
-        </section>
-      )}
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">1 · Scan</CardTitle>
-          <Button onClick={startScan} disabled={busy}>
-            {busy && job?.kind === "scan" ? <RefreshCw className="animate-spin" /> : <ScanSearch />}
-            Scan libraries
-          </Button>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          Fetches every user&apos;s assets and matches by checksum. Dry run — nothing is changed.
-          {stats && (
-            <span>
-              {" "}
-              Last scan: {stats.primary_assets} primary +{" "}
-              {stats.per_user.reduce((sum, user) => sum + user.assets, 0)} secondary assets.
-            </span>
-          )}
-          {jobPanel("scan")}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-          <CardTitle className="text-base">2 · Review groups</CardTitle>
-          {reviewControls}
-        </CardHeader>
-        <CardContent className="px-0 py-0">
-          {!stats && <p className="px-4 py-6 text-sm text-muted-foreground">Run a scan first.</p>}
-          {stats && pairs?.items.length === 0 && (
-            <p className="px-4 py-6 text-sm text-muted-foreground">
-              No groups for this filter
-              {filter === "eligible" && stats.group_count > 0 ? " — everything excluded." : "."}
-            </p>
-          )}
-          {pairs && pairs.items.length > 0 && (
-            <div className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-2 2xl:grid-cols-3">
-              {pairs.items.map((pair) => (
-                <PairRow key={pair.checksum} pair={pair} onToggle={togglePair} />
-              ))}
-            </div>
-          )}
-          {pairs && pairs.total > PAGE_SIZE && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2">
-              <p className="text-xs text-muted-foreground">
-                {offset + 1}–{Math.min(offset + PAGE_SIZE, pairs.total)} of {pairs.total}
-              </p>
-              {pager}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">3 · Apply</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {stats ? (
-            <ApplyPanel stats={stats} disabled={busy} onStarted={handleJobStarted} />
-          ) : (
-            <p className="text-sm text-muted-foreground">Run a scan first.</p>
-          )}
-          {jobPanel("apply")}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">4 · Undo</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <UndoPanel refreshKey={refreshKey} disabled={busy} onStarted={handleJobStarted} />
-          {jobPanel("undo")}
-        </CardContent>
-      </Card>
-
-      <footer className="pb-6 text-center text-xs text-muted-foreground">
-        immich-cross-user-dedup · dry-run first, apply in small batches, undo until purge
+      <footer className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 pb-4">
+        <Button variant="ghost" size="sm" disabled={!prevStep || !isReachable(prevStep.id)} onClick={() => prevStep && navigate(prevStep.id)}>
+          ← {prevStep?.label ?? "Back"}
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          immich-cross-user-dedup · dry-run first, apply in small batches, undo until purge
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!nextStep || !isReachable(nextStep.id) || busy}
+          onClick={() => nextStep && navigate(nextStep.id)}
+        >
+          {nextStep?.label ?? "Done"} →
+        </Button>
       </footer>
     </div>
   )
-}
-
-function StatCard({ label, value }: { label: string; value: number | string }) {
-  return (
-    <Card className="py-3">
-      <CardContent className="px-3">
-        <p className="text-xs text-muted-foreground">{label}</p>
-        <p className="text-lg font-semibold">{value}</p>
-      </CardContent>
-    </Card>
-  )
-}
-
-function deriveStep(
-  job: JobStatusResponse["job"] | null,
-  stats: StatsDto | null,
-  lastResult: Record<string, unknown> | null,
-): StepId {
-  if (job?.running) {
-    if (job.kind === "scan") return "scan"
-    if (job.kind === "apply") return "apply"
-    if (job.kind === "undo") return "done"
-  }
-  if (lastResult?.kind === "apply" || lastResult?.kind === "undo") return "done"
-  if (stats) return stats.group_count > 0 ? "review" : "done"
-  return "scan"
 }

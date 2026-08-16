@@ -364,7 +364,21 @@ def create_app(
 
     @app.get("/api/journals")
     def get_journals(_: None = Depends(require_token)) -> list[dict[str, Any]]:
-        return session.journals()
+        # metrics per journal up front (before Inspect): counts come straight
+        # from the journal entries, so no extra API traffic
+        journals = []
+        for meta in session.journals():
+            entries = Journal(session.reports_dir / meta["name"]).entries()
+            journals.append(
+                {
+                    **meta,
+                    "trashed_assets": sum(len(e["asset_ids"]) for e in entries if e["op"] == "trash"),
+                    "album_adds": sum(1 for e in entries if e["op"] == "album_add" and e.get("added")),
+                    "album_shares": sum(1 for e in entries if e["op"] == "album_share"),
+                    "metadata_merges": sum(1 for e in entries if e["op"] == "meta_merge"),
+                }
+            )
+        return journals
 
     @app.get("/api/journals/{name}")
     def get_journal(name: str, _: None = Depends(require_token)) -> dict[str, Any]:

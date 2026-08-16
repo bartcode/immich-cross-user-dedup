@@ -93,6 +93,10 @@ export interface JournalSummaryDto {
   name: string
   size_bytes: number
   modified: string
+  trashed_assets: number
+  album_adds: number
+  album_shares: number
+  metadata_merges: number
 }
 
 export interface UndoDetailDto {

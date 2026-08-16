@@ -461,3 +461,20 @@ def test_job_lifecycle_is_logged(world, tmp_path, capsys):
     assert "[scan] started" in output
     assert "[scan] finished in" in output
     assert "[scan] 1 groups" in output
+
+
+def test_journals_list_carries_metrics(world, tmp_path):
+    world.fake.add_asset(world.p_id, "sum-1", size_bytes=10)
+    world.fake.add_asset(world.s_id, "sum-1", size_bytes=10)
+    api, _ = build_app(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+    api.post("/api/apply", json={})
+    wait_for_job(api)
+
+    journals = api.get("/api/journals").json()
+    assert len(journals) == 1
+    entry = journals[0]
+    assert entry["trashed_assets"] == 1
+    assert entry["metadata_merges"] == 0
+    assert "album_adds" in entry and "album_shares" in entry
