@@ -14,10 +14,12 @@ function AssetThumb({
   asset,
   label,
   badgeClass,
+  compact = false,
 }: {
   asset: AssetDto
   label: string
   badgeClass: string
+  compact?: boolean
 }) {
   const [broken, setBroken] = useState(false)
   return (
@@ -25,7 +27,9 @@ function AssetThumb({
       href={asset.url}
       target="_blank"
       rel="noreferrer"
-      className="group relative block size-20 shrink-0 overflow-hidden rounded-md border bg-muted"
+      className={`group relative block shrink-0 overflow-hidden rounded-md border bg-muted ${
+        compact ? "size-14" : "size-20"
+      }`}
       title={`${label}: ${asset.file_name}`}
     >
       {broken ? (
@@ -59,6 +63,9 @@ function AssetThumb({
 interface PairRowProps {
   pair: PairDto
   onToggle: (pair: PairDto) => void
+  selected?: boolean
+  onSelect?: (checksum: string, selected: boolean) => void
+  compact?: boolean
 }
 
 function loserIssues(loser: LoserDto): string[] {
@@ -69,19 +76,32 @@ function loserIssues(loser: LoserDto): string[] {
 }
 
 /** One duplicate group as a grid card: thumbnails across the top, details below. */
-export function PairRow({ pair, onToggle }: PairRowProps) {
+export function PairRow({ pair, onToggle, selected = false, onSelect, compact = false }: PairRowProps) {
   const albumNames = pair.losers.flatMap((loser) => loser.albums?.map((album) => album.name) ?? [])
   const issues = pair.losers.flatMap(loserIssues)
   const loserBytes = pair.losers.reduce((sum, loser) => sum + loser.size_bytes, 0)
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border p-3">
+    <div
+      className={`flex flex-col gap-2 rounded-lg border p-3 transition ${
+        selected ? "border-amber-400 ring-1 ring-amber-300 dark:border-amber-500/60" : ""
+      } ${compact ? "gap-1.5 p-2" : ""}`}
+    >
       <div className="flex items-start justify-between gap-2">
+        {onSelect && (
+          <input
+            type="checkbox"
+            aria-label={`Select ${pair.keeper.file_name}`}
+            checked={selected}
+            onChange={(event) => onSelect(pair.checksum, event.target.checked)}
+            className="mt-1 size-4 shrink-0 accent-amber-500"
+          />
+        )}
         <div className="flex flex-wrap items-center gap-2">
-          <AssetThumb asset={pair.keeper} label="keeper" badgeClass="bg-emerald-600 text-white" />
+          <AssetThumb asset={pair.keeper} label="keeper" badgeClass="bg-emerald-600 text-white" compact={compact} />
           <div className="text-xs text-muted-foreground">=</div>
           {pair.losers.map((loser) => (
-            <AssetThumb key={loser.id} asset={loser} label="loser" badgeClass="bg-orange-600 text-white" />
+            <AssetThumb key={loser.id} asset={loser} label="loser" badgeClass="bg-orange-600 text-white" compact={compact} />
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">

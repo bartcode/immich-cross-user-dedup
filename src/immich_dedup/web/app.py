@@ -319,6 +319,26 @@ def create_app(
         session.persist_scan()
         return {"checksum": checksum, "excluded": False}
 
+    @app.post("/api/pairs/bulk")
+    def bulk_pairs(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:
+        result = scan_or_404()
+        action = body.get("action")
+        checksums = [str(checksum) for checksum in body.get("checksums", [])]
+        if action not in ("exclude", "include"):
+            raise HTTPException(status_code=400, detail="action must be 'exclude' or 'include'")
+        known = {group.checksum for group in result.groups}
+        unknown = [checksum for checksum in checksums if checksum not in known]
+        if unknown:
+            raise HTTPException(
+                status_code=404, detail=f"unknown checksums: {', '.join(unknown[:5])}"
+            )
+        if action == "exclude":
+            result.excluded.update(checksums)
+        else:
+            result.excluded.difference_update(checksums)
+        session.persist_scan()
+        return {"changed": len(checksums), "excluded_total": len(result.excluded)}
+
     @app.post("/api/apply")
     def start_apply(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:
         scan_or_404()

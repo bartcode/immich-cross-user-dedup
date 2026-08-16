@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react"
-import { ArrowRight, Ban, Images } from "lucide-react"
+import { AlignJustify, ArrowRight, Ban, CircleCheckBig, Images, LayoutGrid, ListChecks, X } from "lucide-react"
+import { FuzzyList } from "@/components/fuzzy-list"
 import { PairRow } from "@/components/pair-row"
 import { StepHeader } from "@/components/wizard-stepper"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api, type PairDto, type PairsResponse, type StatsDto } from "@/lib/api"
+import { useLocalStorage } from "@/lib/use-local-storage"
 
 export const REVIEW_ACCENT = "bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300"
 
@@ -13,6 +15,7 @@ const PAGE_SIZE = 15
 
 type Filter = "eligible" | "all" | "excluded" | "live-photo"
 type Sort = "date-desc" | "date-asc" | "size-desc" | "size-asc"
+type Density = "comfortable" | "compact"
 
 /** Page numbers with ellipsis trimming: 1 … (current-1) current (current+1) … N */
 function pageList(current: number, total: number): (number | "…")[] {
@@ -40,9 +43,11 @@ interface ReviewStepProps {
 
 export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: ReviewStepProps) {
   const [pairs, setPairs] = useState<PairsResponse | null>(null)
-  const [filter, setFilter] = useState<Filter>("eligible")
-  const [sort, setSort] = useState<Sort>("date-desc")
+  const [filter, setFilter] = useLocalStorage<Filter>("dedup.filter", "eligible")
+  const [sort, setSort] = useLocalStorage<Sort>("dedup.sort", "date-desc")
+  const [density, setDensity] = useLocalStorage<Density>("dedup.density", "comfortable")
   const [offset, setOffset] = useState(0)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const loadPairs = useCallback(() => {
     api
@@ -58,6 +63,36 @@ export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: Re
     await action(pair.checksum)
     loadPairs()
     onStatsRefresh()
+  }
+
+  async function bulk(action: "exclude" | "include") {
+    const checksums = [...selected]
+    if (checksums.length === 0) return
+    await api.bulkPairs(action, checksums)
+    setSelected(new Set())
+    loadPairs()
+    onStatsRefresh()
+  }
+
+  function toggleSelected(checksum: string, nowSelected: boolean) {
+    setSelected((previous) => {
+      const next = new Set(previous)
+      if (nowSelected) next.add(checksum)
+      else next.delete(checksum)
+      return next
+    })
+  }
+
+  const pageChecksums = pairs?.items.map((pair) => pair.checksum) ?? []
+  const allOnPageSelected = pageChecksums.length > 0 && pageChecksums.every((checksum) => selected.has(checksum))
+
+  function toggleSelectPage() {
+    setSelected((previous) => {
+      const next = new Set(previous)
+      if (allOnPageSelected) pageChecksums.forEach((checksum) => next.delete(checksum))
+      else pageChecksums.forEach((checksum) => next.add(checksum))
+      return next
+    })
   }
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1
@@ -100,45 +135,7 @@ export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: Re
     </div>
   )
 
-  const controls = (
-    <div className="flex flex-wrap items-center gap-2">
-      <Select
-        value={filter}
-        onValueChange={(value) => {
-          setFilter(value as Filter)
-          setOffset(0)
-        }}
-      >
-        <SelectTrigger className="w-44" aria-label="Filter groups">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="eligible">Eligible</SelectItem>
-          <SelectItem value="all">All groups</SelectItem>
-          <SelectItem value="excluded">Excluded</SelectItem>
-          <SelectItem value="live-photo">Live-photo cases</SelectItem>
-        </SelectContent>
-      </Select>
-      <Select
-        value={sort}
-        onValueChange={(value) => {
-          setSort(value as Sort)
-          setOffset(0)
-        }}
-      >
-        <SelectTrigger className="w-44" aria-label="Sort groups">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="date-desc">Newest first</SelectItem>
-          <SelectItem value="date-asc">Oldest first</SelectItem>
-          <SelectItem value="size-desc">Largest first</SelectItem>
-          <SelectItem value="size-asc">Smallest first</SelectItem>
-        </SelectContent>
-      </Select>
-      {pager}
-    </div>
-  )
+  const compact = density === "compact"
 
   return (
     <div className="grid gap-4">
@@ -147,7 +144,17 @@ export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: Re
         accent={REVIEW_ACCENT}
         title="Review the duplicates"
         description="Step 3 — green keeps its file, orange gets trashed. Switch off anything that should stay in both libraries."
-      />
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Toggle thumbnail density"
+          onClick={() => setDensity(compact ? "comfortable" : "compact")}
+        >
+          {compact ? <AlignJustify /> : <LayoutGrid />}
+          {compact ? "Compact" : "Comfortable"}
+        </Button>
+      </StepHeader>
 
       {!stats ? (
         <EmptyState onNavigate={() => onNavigate("scan")} />
@@ -156,11 +163,82 @@ export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: Re
           {stats.excluded_count > 0 && (
             <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
               <Ban className="size-4 text-amber-500" />
-              {stats.excluded_count} group{stats.excluded_count === 1 ? "" : "s"} excluded — they stay duplicated on purpose.
+              {stats.excluded_count} group{stats.excluded_count === 1 ? "" : "s"} excluded — they stay duplicated on
+              purpose.
             </p>
           )}
+
+          {selected.size > 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-500/40 dark:bg-amber-500/10">
+              <span className="flex items-center gap-1.5 font-medium">
+                <ListChecks className="size-4 text-amber-600" />
+                {selected.size} selected
+              </span>
+              <span className="text-muted-foreground">(kept across pages)</span>
+              <div className="ml-auto flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => bulk("include")}>
+                  <CircleCheckBig /> Include
+                </Button>
+                <Button size="sm" onClick={() => bulk("exclude")}>
+                  <Ban /> Exclude
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                  <X /> Clear
+                </Button>
+              </div>
+            </div>
+          )}
+
           <Card>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">{controls}</div>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all groups on this page"
+                    checked={allOnPageSelected}
+                    onChange={toggleSelectPage}
+                    className="size-4 accent-amber-500"
+                  />
+                  page
+                </label>
+                <Select
+                  value={filter}
+                  onValueChange={(value) => {
+                    setFilter(value as Filter)
+                    setOffset(0)
+                  }}
+                >
+                  <SelectTrigger className="w-44" aria-label="Filter groups">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="eligible">Eligible</SelectItem>
+                    <SelectItem value="all">All groups</SelectItem>
+                    <SelectItem value="excluded">Excluded</SelectItem>
+                    <SelectItem value="live-photo">Live-photo cases</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={sort}
+                  onValueChange={(value) => {
+                    setSort(value as Sort)
+                    setOffset(0)
+                  }}
+                >
+                  <SelectTrigger className="w-44" aria-label="Sort groups">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="date-desc">Newest first</SelectItem>
+                    <SelectItem value="date-asc">Oldest first</SelectItem>
+                    <SelectItem value="size-desc">Largest first</SelectItem>
+                    <SelectItem value="size-asc">Smallest first</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {pager}
+            </div>
             <CardContent className="px-0 py-0">
               {pairs?.items.length === 0 && (
                 <p className="px-4 py-6 text-sm text-muted-foreground">
@@ -169,9 +247,20 @@ export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: Re
                 </p>
               )}
               {pairs && pairs.items.length > 0 && (
-                <div className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-2 2xl:grid-cols-3">
+                <div
+                  className={`grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-2 ${
+                    compact ? "xl:grid-cols-3 2xl:grid-cols-4" : "2xl:grid-cols-3"
+                  }`}
+                >
                   {pairs.items.map((pair) => (
-                    <PairRow key={pair.checksum} pair={pair} onToggle={togglePair} />
+                    <PairRow
+                      key={pair.checksum}
+                      pair={pair}
+                      onToggle={togglePair}
+                      selected={selected.has(pair.checksum)}
+                      onSelect={toggleSelected}
+                      compact={compact}
+                    />
                   ))}
                 </div>
               )}
@@ -185,6 +274,9 @@ export function ReviewStep({ stats, refreshKey, onNavigate, onStatsRefresh }: Re
               )}
             </CardContent>
           </Card>
+
+          <FuzzyList />
+
           <div className="flex justify-end">
             <Button size="lg" onClick={() => onNavigate("apply")}>
               Continue to apply <ArrowRight />

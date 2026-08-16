@@ -478,3 +478,23 @@ def test_journals_list_carries_metrics(world, tmp_path):
     assert entry["trashed_assets"] == 1
     assert entry["metadata_merges"] == 0
     assert "album_adds" in entry and "album_shares" in entry
+
+
+def test_bulk_exclude_and_include(world, tmp_path):
+    for i in range(3):
+        world.fake.add_asset(world.p_id, f"sum-{i}")
+        world.fake.add_asset(world.s_id, f"sum-{i}")
+    api, _ = build_app(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+
+    response = api.post("/api/pairs/bulk", json={"action": "exclude", "checksums": ["sum-0", "sum-1"]})
+    assert response.status_code == 200
+    assert response.json() == {"changed": 2, "excluded_total": 2}
+    assert api.get("/api/pairs?filter=eligible").json()["total"] == 1
+
+    response = api.post("/api/pairs/bulk", json={"action": "include", "checksums": ["sum-0"]})
+    assert response.json()["excluded_total"] == 1
+
+    assert api.post("/api/pairs/bulk", json={"action": "nope", "checksums": []}).status_code == 400
+    assert api.post("/api/pairs/bulk", json={"action": "exclude", "checksums": ["nope"]}).status_code == 404

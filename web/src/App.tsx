@@ -117,15 +117,24 @@ export default function App() {
       .catch(() => undefined)
   }, [])
 
-  // auto-advance when a job finishes
+  // auto-advance when a job finishes; a verify-scan returns to the Finish step
   const previousRun = useRef<{ kind: string | null; running: boolean } | null>(null)
+  const verifyMode = useRef(false)
   useEffect(() => {
     const current = { kind: job?.kind ?? null, running: busy }
     const previous = previousRun.current
     previousRun.current = current
     if (!previous?.running || current.running || !current.kind || job?.error) return
-    if (current.kind === "scan") setStep("review")
-    else setStep("finish") // apply or undo
+    if (current.kind === "scan") {
+      if (verifyMode.current) {
+        verifyMode.current = false
+        setStep("finish")
+      } else {
+        setStep("review")
+      }
+    } else {
+      setStep("finish") // apply or undo
+    }
   }, [busy, job?.kind, job?.error])
 
   // --- actions --------------------------------------------------------------
@@ -292,10 +301,12 @@ export default function App() {
             job={job}
             busy={busy}
             lastResult={lastResult}
+            stats={stats}
             refreshKey={refreshKey}
             onJobStarted={handleJobStarted}
             onNavigate={navigate}
             onRescan={() => {
+              verifyMode.current = true
               navigate("scan")
               startScan()
             }}

@@ -117,6 +117,18 @@ export interface JournalDetailDto {
   undo_detail?: UndoDetailDto
 }
 
+export interface FuzzyPairDto {
+  keeper: AssetDto
+  loser: AssetDto
+  time_delta_seconds: number
+}
+
+export interface FuzzyResponseDto {
+  count: number
+  csv: string
+  items: FuzzyPairDto[]
+}
+
 export interface JobStatusResponse {
   job: JobDto
   stats: StatsDto | null
@@ -160,9 +172,15 @@ export const api = {
   pair: (checksum: string) => request<PairDto>(`/api/pairs/${checksum}`),
   exclude: (checksum: string) => request<unknown>(`/api/pairs/${checksum}/exclude`, { method: "POST" }),
   include: (checksum: string) => request<unknown>(`/api/pairs/${checksum}/include`, { method: "POST" }),
+  bulkPairs: (action: "exclude" | "include", checksums: string[]) =>
+    request<{ changed: number; excluded_total: number }>("/api/pairs/bulk", {
+      method: "POST",
+      body: JSON.stringify({ action, checksums }),
+    }),
   apply: (body: { merge_metadata: boolean; live_photo_motion: string; limit: number | null }) =>
     request<JobDto>("/api/apply", { method: "POST", body: JSON.stringify(body) }),
   journals: () => request<JournalSummaryDto[]>("/api/journals"),
+  fuzzy: () => request<FuzzyResponseDto>("/api/fuzzy", { method: "POST" }),
   journal: (name: string) => request<JournalDetailDto>(`/api/journals/${encodeURIComponent(name)}`),
   undo: (name: string) => request<JobDto>("/api/undo", { method: "POST", body: JSON.stringify({ name }) }),
 }
