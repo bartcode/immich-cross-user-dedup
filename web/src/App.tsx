@@ -29,7 +29,26 @@ import {
   type StatsDto,
 } from "@/lib/api"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 15
+
+/** Page numbers with ellipsis trimming: 1 … (current-1) current (current+1) … N */
+function pageList(current: number, total: number): (number | "…")[] {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, index) => index + 1)
+  }
+  const wanted = [1, 2, current - 1, current, current + 1, total - 1, total].filter(
+    (page) => page >= 1 && page <= total,
+  )
+  const unique = [...new Set(wanted)].sort((a, b) => a - b)
+  const result: (number | "…")[] = []
+  let previous = 0
+  for (const page of unique) {
+    if (page - previous > 1) result.push("…")
+    result.push(page)
+    previous = page
+  }
+  return result
+}
 
 type Filter = "eligible" | "all" | "excluded" | "live-photo"
 type Sort = "date-desc" | "date-asc" | "size-desc" | "size-asc"
@@ -123,21 +142,46 @@ export default function App() {
 
   const step = deriveStep(job, stats, lastResult)
 
+  const currentPage = Math.floor(offset / PAGE_SIZE) + 1
+  const totalPages = pairs ? Math.max(1, Math.ceil(pairs.total / PAGE_SIZE)) : 1
+
+  const goToPage = (page: number) => setOffset((page - 1) * PAGE_SIZE)
+
   const pager = (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1">
       <Button
         variant="outline"
         size="sm"
         disabled={!pairs || offset === 0}
-        onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+        onClick={() => goToPage(currentPage - 1)}
       >
         ← Prev
       </Button>
+      {pairs &&
+        pageList(currentPage, totalPages).map((page, index) =>
+          page === "…" ? (
+            <span key={`ellipsis-${index}`} className="px-1 text-xs text-muted-foreground">
+              …
+            </span>
+          ) : (
+            <Button
+              key={page}
+              variant={page === currentPage ? "default" : "outline"}
+              size="sm"
+              className="min-w-8"
+              aria-label={`Go to page ${page}`}
+              aria-current={page === currentPage ? "page" : undefined}
+              onClick={() => goToPage(page)}
+            >
+              {page}
+            </Button>
+          ),
+        )}
       <Button
         variant="outline"
         size="sm"
         disabled={!pairs || offset + PAGE_SIZE >= pairs.total}
-        onClick={() => setOffset(offset + PAGE_SIZE)}
+        onClick={() => goToPage(currentPage + 1)}
       >
         Next →
       </Button>
