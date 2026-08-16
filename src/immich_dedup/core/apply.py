@@ -205,8 +205,10 @@ def _transfer_albums(
             else:
                 owner_handle = result.handle_for_owner(album.owner_id)
                 if owner_handle is None:
+                    who = album.owner_email or album.owner_id or "unknown user"
                     outcome.album_failures.append(
-                        f"{album.name or album.id}: album owner is not a configured user"
+                        f"{album.name or album.id}: owned by {who}, who is not a configured user — "
+                        "add them as another secondary, or this duplicate stays"
                     )
                     journal.append({**entry, "added": False, "error": "album owner not configured"})
                     loser_ok = False

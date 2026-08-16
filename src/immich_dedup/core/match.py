@@ -88,6 +88,22 @@ def _live_photo_case(keeper: AssetInfo, loser: AssetInfo) -> str:
     return LivePhotoCase.KEEPER_LACKS_MOTION if loser_motion else LivePhotoCase.LOSER_LACKS_MOTION
 
 
+def parse_album_ref(album: dict) -> AlbumRef:
+    """Resolve an album's owner across Immich API versions.
+
+    v3 removed `ownerId` from album responses — the owner is the FIRST entry of
+    `albumUsers` (documented upstream); older versions carry `ownerId`."""
+    owner_id = album.get("ownerId") or ""
+    owner_email = ""
+    if not owner_id:
+        members = album.get("albumUsers") or []
+        if members:
+            owner = members[0].get("user") or {}
+            owner_id = owner.get("id") or ""
+            owner_email = owner.get("email") or ""
+    return AlbumRef(id=album["id"], name=album.get("albumName", ""), owner_id=owner_id, owner_email=owner_email)
+
+
 def _enrich_loser_albums(
     client: ImmichClient, result_users: list[User], groups: list[DuplicateGroup], progress: ProgressFn | None
 ) -> None:
@@ -100,10 +116,7 @@ def _enrich_loser_albums(
         # and union the results so third-party-owned albums are found too.
         for user in result_users:
             for album in client.get_albums_for_asset(user.email, loser.id):
-                albums.setdefault(
-                    album["id"],
-                    AlbumRef(id=album["id"], name=album.get("albumName", ""), owner_id=album.get("ownerId", "")),
-                )
+                albums.setdefault(album["id"], parse_album_ref(album))
         loser.albums = list(albums.values())
 
 

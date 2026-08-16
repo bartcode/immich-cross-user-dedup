@@ -44,7 +44,7 @@ def _user(user: User) -> dict[str, Any]:
 
 
 def _album(album: AlbumRef) -> dict[str, Any]:
-    return {"id": album.id, "name": album.name, "owner_id": album.owner_id}
+    return {"id": album.id, "name": album.name, "owner_id": album.owner_id, "owner_email": album.owner_email}
 
 
 def _asset(asset: AssetInfo) -> dict[str, Any]:
@@ -133,7 +133,12 @@ def _load_asset(data: dict[str, Any]) -> AssetInfo:
         is_favorite=bool(data.get("is_favorite", False)),
         live_photo_video_id=data.get("live_photo_video_id"),
         albums=[
-            AlbumRef(id=album["id"], name=album.get("name", ""), owner_id=album.get("owner_id", ""))
+            AlbumRef(
+                id=album["id"],
+                name=album.get("name", ""),
+                owner_id=album.get("owner_id", ""),
+                owner_email=album.get("owner_email", ""),
+            )
             for album in data.get("albums", [])
         ],
     )

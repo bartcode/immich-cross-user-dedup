@@ -180,18 +180,26 @@ class FakeImmich:
             }
         return payload
 
-    def _album_response(self, album: dict) -> dict:
+    def _album_response(self, album: dict, auth_user_id: str | None = None) -> dict:
+        # v3 shape: NO ownerId — the FIRST albumUsers entry is the owner, the
+        # second is the auth user when different, the rest follow
+        entries = [(album["ownerId"], "owner")]
+        for user_id, role in sorted(album["users"].items()):
+            if user_id == album["ownerId"]:
+                continue
+            entries.append((user_id, role))
+        if auth_user_id and auth_user_id != album["ownerId"] and auth_user_id not in album["users"]:
+            entries.insert(1, (auth_user_id, "viewer"))
+        by_email = {record["id"]: record["email"] for record in self.users.values()}
         return {
             "id": album["id"],
             "albumName": album["albumName"],
-            "ownerId": album["ownerId"],
             "albumUsers": [
                 {
-                    "userId": user_id,
+                    "user": {"id": user_id, "email": by_email.get(user_id, "user@example.com"), "name": ""},
                     "role": role,
-                    "user": {"id": user_id, "email": "user@example.com", "name": ""},
                 }
-                for user_id, role in album["users"].items()
+                for user_id, role in entries
             ],
             "assetCount": len(album["asset_ids"]),
         }
@@ -320,7 +328,7 @@ class FakeImmich:
     def _albums_list(self, user: dict, request: httpx.Request) -> httpx.Response:
         asset_id = request.url.params.get("assetId")
         albums = [
-            self._album_response(album)
+            self._album_response(album, auth_user_id=user["id"])
             for album in self.albums.values()
             if (asset_id is None or asset_id in album["asset_ids"])
             and self.album_visible_to(album, user["id"])
@@ -365,7 +373,7 @@ class FakeImmich:
             return httpx.Response(403, json={"message": "Only the album owner can share the album"})
         for entry in json.loads(request.content).get("albumUsers", []):
             album["users"][entry.get("userId", "")] = entry.get("role", "editor")
-        return httpx.Response(200, json=self._album_response(album))
+        return httpx.Response(200, json=self._album_response(album, auth_user_id=user["id"]))
 
     def _album_remove_user(self, user: dict, album_id: str, user_id: str) -> httpx.Response:
         album = self.albums.get(album_id)

@@ -54,7 +54,7 @@ def asset_dto(asset: AssetInfo, base_url: str, *, with_albums: bool = False) -> 
             {
                 "id": album.id,
                 "name": album.name,
-                "owner_email": "",
+                "owner_email": album.owner_email,
             }
             for album in asset.albums
         ]

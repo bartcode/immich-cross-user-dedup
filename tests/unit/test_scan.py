@@ -160,3 +160,52 @@ def test_csv_and_summary(tmp_path):
     summary = summary_text(result)
     assert "Cross-user duplicate groups: 1" in summary
     assert "Reclaimable: 1 assets" in summary
+
+
+def test_parse_album_ref_across_api_versions():
+    from immich_dedup.core.match import parse_album_ref
+
+    # v3: no ownerId — the FIRST albumUsers entry is the owner (documented)
+    v3 = {
+        "id": "a1",
+        "albumName": "Trip",
+        "albumUsers": [
+            {"user": {"id": "owner-1", "email": "owner@x.com"}, "role": "owner"},
+            {"user": {"id": "member-1", "email": "member@x.com"}, "role": "editor"},
+        ],
+    }
+    ref = parse_album_ref(v3)
+    assert ref.owner_id == "owner-1"
+    assert ref.owner_email == "owner@x.com"
+
+    # legacy v1/v2: ownerId present
+    legacy = {"id": "a2", "albumName": "Old", "ownerId": "owner-2"}
+    assert parse_album_ref(legacy).owner_id == "owner-2"
+
+    # degenerate: neither — owner stays empty (surfaces as a named failure later)
+    assert parse_album_ref({"id": "a3", "albumName": "?"}).owner_id == ""
+
+
+def test_album_owned_by_unconfigured_user_keeps_duplicate():
+    from immich_dedup.core.apply import ApplyOptions, apply_groups
+    from immich_dedup.core.journal import Journal
+
+    world = World()
+    fake = world.fake
+    third_id, _ = fake.add_user("stranger@example.com")
+    primary, secondaries, users = world.users()
+    fake.add_asset(world.p_id, "sum-1", size_bytes=10)
+    loser = fake.add_asset(world.s_id, "sum-1", size_bytes=10)
+    # the stranger's album contains her photo, so it must be shared with her
+    # (only participants' assets can be in an album) — but she is NOT the owner
+    fake.add_album(third_id, "Stranger's album", asset_ids=[loser], shared_with={world.s_id: "viewer"})
+
+    result = scan(world.client, primary, secondaries, users=users)
+    from pathlib import Path
+
+    journal = Journal(Path("/tmp/stranger_albums.jsonl"))
+    outcome = apply_groups(world.client, result, ApplyOptions(), journal)
+
+    # the owner is named, and the duplicate is KEPT so the album keeps the photo
+    assert any("stranger@example.com" in failure for failure in outcome.album_failures)
+    assert fake.asset(loser)["trashed"] is False

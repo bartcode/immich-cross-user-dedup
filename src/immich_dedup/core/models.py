@@ -20,6 +20,7 @@ class AlbumRef:
     id: str
     name: str
     owner_id: str
+    owner_email: str = ""  # filled from v3 albumUsers; empty on older servers
 
 
 @dataclass
