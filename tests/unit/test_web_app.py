@@ -345,3 +345,63 @@ def test_pairs_sorting_by_size_and_date(world, tmp_path):
 
     # invalid sort is rejected
     assert api.get("/api/pairs?sort=nope").status_code == 422
+
+
+def test_journal_undo_detail_lists_restored_assets(world, tmp_path):
+    fake = world.fake
+    fake.add_asset(world.p_id, "beach.jpg", file_name="beach.jpg", size_bytes=5000)
+    loser = fake.add_asset(world.s_id, "beach.jpg", file_name="beach.jpg", size_bytes=5000)
+    fake.add_album(world.s_id, "Summer trip", asset_ids=[loser])
+    api, _ = build_app(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+    api.post("/api/apply", json={})
+    wait_for_job(api)
+
+    name = api.get("/api/journals").json()[0]["name"]
+    detail = api.get(f"/api/journals/{name}").json()
+
+    assets = detail["undo_detail"]["assets"]
+    restored = {asset["id"]: asset for asset in assets}
+    assert loser in restored
+    assert restored[loser]["name"] == "beach.jpg"
+    assert restored[loser]["owner_email"] == "secondary@example.com"
+    assert restored[loser]["bytes"] == 5000
+
+    albums = detail["undo_detail"]["albums"]
+    assert len(albums) == 1
+    assert albums[0]["album"] == "Summer trip"
+    assert albums[0]["keeper_name"] == "beach.jpg"
+    assert albums[0]["owner_email"] == "secondary@example.com"
+
+
+def test_journal_undo_detail_falls_back_to_scan_for_old_journals(world, tmp_path):
+    """Journals written before per-asset enrichment still resolve names via the
+    persisted scan."""
+    import json as jsonlib
+
+    fake = world.fake
+    fake.add_asset(world.p_id, "cat.jpg", file_name="cat.jpg", size_bytes=123)
+    loser = fake.add_asset(world.s_id, "cat.jpg", file_name="cat.jpg", size_bytes=123)
+    fake.add_album(world.s_id, "Cats", asset_ids=[loser])
+    api, _ = build_app(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+    api.post("/api/apply", json={})
+    wait_for_job(api)
+
+    journals = api.get("/api/journals").json()
+    name = journals[0]["name"]
+    # strip the enrichment to emulate a legacy journal
+    path = tmp_path / name
+    entries = [jsonlib.loads(line) for line in path.read_text().splitlines() if line]
+    for entry in entries:
+        entry.pop("assets", None)
+        entry.pop("keeper_name", None)
+        entry.pop("loser_name", None)
+    path.write_text("\n".join(jsonlib.dumps(entry) for entry in entries) + "\n")
+
+    detail = api.get(f"/api/journals/{name}").json()
+    restored = {asset["id"]: asset for asset in detail["undo_detail"]["assets"]}
+    assert restored[loser]["name"] == "cat.jpg"  # resolved from the stored scan
+    assert detail["undo_detail"]["albums"][0]["keeper_name"] == "cat.jpg"

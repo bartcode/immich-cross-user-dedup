@@ -125,7 +125,9 @@ def _transfer_albums(
                 "album_name": album.name,
                 "album_owner_id": album.owner_id,
                 "keeper_id": group.keeper.id,
+                "keeper_name": group.keeper.original_file_name,
                 "loser_id": loser.id,
+                "loser_name": loser.original_file_name,
             }
 
             if album.owner_id == result.primary.id:
@@ -139,7 +141,15 @@ def _transfer_albums(
                     journal.append({**entry, "added": False, "error": "album owner not configured"})
                     continue
                 added, error, method = _transfer_foreign_album(
-                    client, result, owner_handle, primary_handle, primary_id, album, group.keeper.id, journal
+                    client,
+                    result,
+                    owner_handle,
+                    primary_handle,
+                    primary_id,
+                    album,
+                    group.keeper.id,
+                    group.keeper.original_file_name,
+                    journal,
                 )
 
             if added:
@@ -165,6 +175,7 @@ def _transfer_foreign_album(
     primary_id: str,
     album,
     keeper_id: str,
+    keeper_name: str,
     journal: Journal,
 ) -> tuple[bool, str | None, str]:
     """Transfer the keeper into an album owned by another user.
@@ -197,6 +208,7 @@ def _transfer_foreign_album(
             "album_name": album.name,
             "album_owner_id": album.owner_id,
             "user_id": primary_id,
+            "keeper_name": keeper_name,
             "role": "editor",
         }
     )
@@ -260,4 +272,20 @@ def _trash_losers(
         outcome.trashed_per_user[loser.owner_email] = (
             outcome.trashed_per_user.get(loser.owner_email, 0) + len(trashed_now)
         )
-        journal.append({"op": "trash", "owner_id": loser.owner_id, "asset_ids": trashed_now})
+        journal.append(
+            {
+                "op": "trash",
+                "owner_id": loser.owner_id,
+                "owner_email": loser.owner_email,
+                "asset_ids": trashed_now,
+                # human-readable detail for the undo preview (not used by undo logic)
+                "assets": [
+                    {"id": loser.id, "name": loser.original_file_name, "bytes": loser.file_size_bytes},
+                    *(
+                        {"id": motion_id, "name": "(motion video)", "bytes": 0}
+                        for motion_id in trashed_now
+                        if motion_id != loser.id
+                    ),
+                ],
+            }
+        )

@@ -348,7 +348,83 @@ def create_app(
             "album_adds": sum(1 for e in entries if e["op"] == "album_add" and e.get("added")),
             "metadata_merges": sum(1 for e in entries if e["op"] == "meta_merge"),
         }
-        return {"name": name, "entries": entries, "undo_preview": undo_preview}
+        return {
+            "name": name,
+            "entries": entries,
+            "undo_preview": undo_preview,
+            "undo_detail": _undo_detail(entries, session),
+        }
+
+    def _undo_detail(entries: list[dict[str, Any]], session: Session) -> dict[str, Any]:
+        """Human-readable detail about what undo would restore. Asset info comes
+        from the journal's own enrichment (newer journals) with the persisted
+        scan as fallback (older journals); missing entries stay anonymous."""
+        scan = session.scan_result
+
+        def from_scan(asset_id: str) -> dict[str, Any] | None:
+            if scan is None:
+                return None
+            for group in scan.groups:
+                for asset in (group.keeper, *group.losers):
+                    if asset.id == asset_id:
+                        return {
+                            "id": asset.id,
+                            "name": asset.original_file_name,
+                            "owner_email": asset.owner_email,
+                            "bytes": asset.file_size_bytes,
+                        }
+            return None
+
+        def owner_email(user_id: str) -> str:
+            if scan is not None and user_id in scan.users:
+                return scan.users[user_id].email
+            return ""
+
+        assets: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            if entry["op"] != "trash":
+                continue
+            details = {detail["id"]: detail for detail in entry.get("assets", [])}
+            for asset_id in entry.get("asset_ids", []):
+                detail = details.get(asset_id) or from_scan(asset_id) or {"id": asset_id, "bytes": 0}
+                assets.setdefault(
+                    asset_id,
+                    {
+                        "id": asset_id,
+                        "name": detail.get("name") or "unknown file",
+                        "owner_email": detail.get("owner_email") or entry.get("owner_email", ""),
+                        "bytes": detail.get("bytes", 0),
+                    },
+                )
+
+        albums = []
+        for entry in entries:
+            if entry["op"] != "album_add" or not entry.get("added"):
+                continue
+            keeper_name = entry.get("keeper_name")
+            if not keeper_name:
+                keeper_name = (from_scan(entry.get("keeper_id") or "") or {}).get("name")
+            albums.append(
+                {
+                    "album": entry.get("album_name") or entry.get("album_id"),
+                    "keeper_name": keeper_name,
+                    "owner_email": owner_email(entry.get("album_owner_id", "")),
+                    "method": entry.get("method", "owner"),
+                }
+            )
+        shares = [
+            {
+                "album": entry.get("album_name") or entry.get("album_id"),
+                "owner_email": owner_email(entry.get("album_owner_id", "")),
+            }
+            for entry in entries
+            if entry["op"] == "album_share"
+        ]
+        return {
+            "assets": sorted(assets.values(), key=lambda asset: asset["name"]),
+            "albums": albums,
+            "shares": shares,
+        }
 
     @app.post("/api/undo")
     def start_undo(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:

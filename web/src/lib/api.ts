@@ -95,6 +95,12 @@ export interface JournalSummaryDto {
   modified: string
 }
 
+export interface UndoDetailDto {
+  assets: { id: string; name: string; owner_email: string; bytes: number }[]
+  albums: { album: string; keeper_name: string | null; owner_email: string; method: string }[]
+  shares: { album: string; owner_email: string }[]
+}
+
 export interface JournalDetailDto {
   name: string
   entries: Record<string, unknown>[]
@@ -104,6 +110,7 @@ export interface JournalDetailDto {
     album_adds: number
     metadata_merges: number
   }
+  undo_detail?: UndoDetailDto
 }
 
 export interface JobStatusResponse {
