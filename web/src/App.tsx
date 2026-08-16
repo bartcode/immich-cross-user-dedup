@@ -377,9 +377,13 @@ export default function App() {
               {filter === "eligible" && stats.group_count > 0 ? " — everything excluded." : "."}
             </p>
           )}
-          {pairs?.items.map((pair) => (
-            <PairRow key={pair.checksum} pair={pair} onToggle={togglePair} />
-          ))}
+          {pairs && pairs.items.length > 0 && (
+            <div className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-2 2xl:grid-cols-3">
+              {pairs.items.map((pair) => (
+                <PairRow key={pair.checksum} pair={pair} onToggle={togglePair} />
+              ))}
+            </div>
+          )}
           {pairs && pairs.total > PAGE_SIZE && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2">
               <p className="text-xs text-muted-foreground">

@@ -68,46 +68,47 @@ function loserIssues(loser: LoserDto): string[] {
   return issues
 }
 
+/** One duplicate group as a grid card: thumbnails across the top, details below. */
 export function PairRow({ pair, onToggle }: PairRowProps) {
   const albumNames = pair.losers.flatMap((loser) => loser.albums?.map((album) => album.name) ?? [])
   const issues = pair.losers.flatMap(loserIssues)
   const loserBytes = pair.losers.reduce((sum, loser) => sum + loser.size_bytes, 0)
 
   return (
-    <div className="flex items-center gap-4 border-b px-4 py-3 last:border-b-0">
-      <div className="flex max-w-md flex-wrap items-center gap-2">
-        <AssetThumb asset={pair.keeper} label="keeper" badgeClass="bg-emerald-600 text-white" />
-        <div className="text-xs text-muted-foreground">=</div>
-        {pair.losers.map((loser) => (
-          <AssetThumb key={loser.id} asset={loser} label="loser" badgeClass="bg-orange-600 text-white" />
+    <div className="flex flex-col gap-2 rounded-lg border p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <AssetThumb asset={pair.keeper} label="keeper" badgeClass="bg-emerald-600 text-white" />
+          <div className="text-xs text-muted-foreground">=</div>
+          {pair.losers.map((loser) => (
+            <AssetThumb key={loser.id} asset={loser} label="loser" badgeClass="bg-orange-600 text-white" />
+          ))}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <span className={cn("text-xs", pair.excluded ? "text-muted-foreground" : "text-foreground")}>
+            {pair.excluded ? "excluded" : "dedupe"}
+          </span>
+          <Switch checked={!pair.excluded} onCheckedChange={() => onToggle(pair)} aria-label="include group" />
+        </div>
+      </div>
+
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="truncate font-medium">{pair.keeper.file_name}</span>
+        {pair.keeper.type === "VIDEO" && <Badge variant="outline">video</Badge>}
+        <Badge variant="secondary">
+          {pair.losers.length} duplicate{pair.losers.length === 1 ? "" : "s"}
+        </Badge>
+        {issues.map((issue) => (
+          <Badge key={issue} variant="destructive">
+            {issue}
+          </Badge>
         ))}
       </div>
 
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate font-medium">{pair.keeper.file_name}</span>
-          {pair.keeper.type === "VIDEO" && <Badge variant="outline">video</Badge>}
-          {issues.map((issue) => (
-            <Badge key={issue} variant="destructive">
-              {issue}
-            </Badge>
-          ))}
-          <Badge variant="secondary">
-            {pair.losers.length} duplicate{pair.losers.length === 1 ? "" : "s"}
-          </Badge>
-        </div>
-        <div className="mt-0.5 text-xs text-muted-foreground">
-          {pair.keeper.taken_at ? new Date(pair.keeper.taken_at).toLocaleString() : "unknown date"} ·{" "}
-          {humanBytes(loserBytes)} reclaimable
-          {albumNames.length > 0 && <> · in {albumNames.join(", ")}</>}
-        </div>
-      </div>
-
-      <div className="flex shrink-0 items-center gap-2">
-        <span className={cn("text-xs", pair.excluded ? "text-muted-foreground" : "text-foreground")}>
-          {pair.excluded ? "excluded" : "dedupe"}
-        </span>
-        <Switch checked={!pair.excluded} onCheckedChange={() => onToggle(pair)} aria-label="include pair" />
+      <div className="text-xs text-muted-foreground">
+        {pair.keeper.taken_at ? new Date(pair.keeper.taken_at).toLocaleString() : "unknown date"} ·{" "}
+        {humanBytes(loserBytes)} reclaimable
+        {albumNames.length > 0 && <> · in {albumNames.join(", ")}</>}
       </div>
     </div>
   )
