@@ -59,6 +59,10 @@ class DuplicatePair:
     keeper: AssetInfo
     loser: AssetInfo
     live_photo: str  # LivePhotoCase value
+    # Motion-video asset ids trashed together with the loser (default policy).
+    motion_ids: list[str] = field(default_factory=list)
+    # Bytes reclaimed when this pair is applied (loser + motions).
+    reclaimable_bytes: int = 0
 
 
 @dataclass
