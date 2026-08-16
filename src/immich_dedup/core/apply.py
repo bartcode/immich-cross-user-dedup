@@ -33,6 +33,9 @@ class ApplyResult:
     trashed_per_user: dict[str, int] = field(default_factory=dict)
     metadata_merges: int = 0
     errors: list[str] = field(default_factory=list)
+    # set when a permission error makes every remaining group hopeless; the
+    # run stops instead of failing the same way thousands of times
+    aborted: str | None = None
 
     def summary(self) -> str:
         per_user = ", ".join(f"{email}: {count}" for email, count in sorted(self.trashed_per_user.items()))
@@ -44,8 +47,14 @@ class ApplyResult:
             f"Assets trashed:    {self.trashed_assets}" + (f" ({per_user})" if per_user else ""),
             f"Metadata merges:   {self.metadata_merges}",
         ]
+        if self.aborted:
+            lines.append(f"ABORTED:           {self.aborted}")
         if self.errors:
             lines.append(f"Errors:            {len(self.errors)}")
+            for error in self.errors[:5]:
+                lines.append(f"  - {error}")
+            if len(self.errors) > 5:
+                lines.append(f"  ... and {len(self.errors) - 5} more")
         return "\n".join(lines)
 
 
@@ -97,14 +106,27 @@ def apply_groups(
         if not active_losers:
             continue
 
-        _transfer_albums(client, result, group, active_losers, journal, outcome)
+        safe_losers = _transfer_albums(client, result, group, active_losers, journal, outcome)
+        if outcome.aborted:
+            break
         if options.merge_metadata:
             _merge_metadata(client, result, group, journal, outcome)
-        _trash_losers(client, result, group, active_losers, journal, outcome, trashed_ids)
+        _trash_losers(client, result, group, active_losers, safe_losers, journal, outcome, trashed_ids)
+        if outcome.aborted:
+            break
         outcome.applied_groups += 1
 
-    journal.append({"op": "run_end", "summary": {"applied_groups": outcome.applied_groups}})
+    journal.append(
+        {
+            "op": "run_end",
+            "summary": {"applied_groups": outcome.applied_groups, "aborted": bool(outcome.aborted)},
+        }
+    )
     return outcome
+
+
+def _permission_denied(error: ImmichApiError) -> bool:
+    return error.status_code == 403
 
 
 def _transfer_albums(
@@ -114,10 +136,18 @@ def _transfer_albums(
     losers: list,
     journal: Journal,
     outcome: ApplyResult,
-) -> None:
+) -> set[str]:
+    """Add the keeper to every album containing a loser.
+
+    Returns the loser ids that are SAFE TO TRASH: every album transfer for that
+    loser succeeded (or it had no albums). Losers with failed transfers are
+    kept — trashing them would remove the photo from an album without a
+    replacement."""
     primary_handle = result.primary.email
     primary_id = result.primary.id
+    safe_losers: set[str] = set()
     for loser in losers:
+        loser_ok = True
         for album in loser.albums:
             entry: dict[str, Any] = {
                 "op": "album_add",
@@ -132,7 +162,11 @@ def _transfer_albums(
             }
 
             if album.owner_id == result.primary.id:
-                added, error, method = _add_to_album(client, primary_handle, album.id, group.keeper.id), None, "owner"
+                try:
+                    added = _add_to_album(client, primary_handle, album.id, group.keeper.id)
+                    error, method = None, "owner"
+                except ImmichApiError as api_error:
+                    added, error, method = False, str(api_error), "owner"
             else:
                 owner_handle = result.handle_for_owner(album.owner_id)
                 if owner_handle is None:
@@ -157,9 +191,13 @@ def _transfer_albums(
                 outcome.albums_transferred += 1
             elif error and error != "duplicate":
                 outcome.album_failures.append(f"{album.name or album.id}: {error}")
+                loser_ok = False  # photo would vanish from this album — keep the duplicate
             journal.append(
                 {**entry, "added": added, "error": error if error != "duplicate" else None, "method": method}
             )
+        if loser_ok:
+            safe_losers.add(loser.id)
+    return safe_losers
 
 
 def _add_to_album(client: ImmichClient, handle: str, album_id: str, asset_id: str) -> bool:
@@ -250,11 +288,18 @@ def _trash_losers(
     result: ScanResult,
     group,
     losers: list,
+    safe_losers: set[str],
     journal: Journal,
     outcome: ApplyResult,
     trashed_ids: set[str],
 ) -> None:
     for loser in losers:
+        if loser.id not in safe_losers:
+            outcome.errors.append(
+                f"kept duplicate {loser.original_file_name} ({loser.id}): its album transfer "
+                "failed, so trashing it would remove the photo from that album"
+            )
+            continue
         motions = [m for m in group.motion_ids.get(loser.id, []) if m not in trashed_ids]
         ids = [loser.id, *motions]
         handle = result.handle_for_owner(loser.owner_id)
@@ -264,6 +309,14 @@ def _trash_losers(
         try:
             responses = client.trash_assets(handle, ids)
         except ImmichApiError as api_error:
+            if _permission_denied(api_error):
+                # e.g. the secondary key lacks asset.delete — every remaining
+                # group would fail identically, so stop the run right here
+                outcome.aborted = (
+                    f"permission denied trashing assets — {api_error} "
+                    "(check the secondary API key scopes)"
+                )
+                return
             outcome.errors.append(f"trashing loser {loser.id}: {api_error}")
             continue
         trashed_now = [r["id"] for r in responses if r.get("success")]

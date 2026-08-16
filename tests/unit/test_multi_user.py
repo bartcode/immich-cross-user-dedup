@@ -121,9 +121,11 @@ def test_album_transfer_fails_only_without_albumuser_scope(tmp_path: Path):
     assert keeper in fake.album_asset_ids(bob_album)
     assert keeper not in fake.album_asset_ids(carol_album)
     assert any("Carol album" in failure for failure in outcome.album_failures)
-    # both losers still trashed
+    # bob's loser is trashed; carol's is KEPT — trashing it would remove the
+    # photo from her album with no replacement
     assert fake.asset(bob_copy)["trashed"] is True
-    assert fake.asset(carol_copy)["trashed"] is True
+    assert fake.asset(carol_copy)["trashed"] is False
+    assert any("kept duplicate" in error for error in outcome.errors)
 
 
 def test_secondary_only_group_skipped_and_untouched(tmp_path: Path):

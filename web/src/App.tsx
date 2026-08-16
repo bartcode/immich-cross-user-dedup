@@ -356,20 +356,47 @@ export default function App() {
       )}
 
       {!busy && lastResult && (
-        <Alert>
-          <AlertTitle className="capitalize">
-            {String(lastResult.kind)} {lastResult.cancelled ? "cancelled" : "finished"}
+        <Alert variant={lastResult.error_count || lastResult.aborted ? "destructive" : "default"}>
+          <AlertTitle>
+            {lastResult.headline ? (
+              <>
+                {String(lastResult.headline)}
+                {lastResult.error_count ? (
+                  <> — {Number(lastResult.error_count)} error{Number(lastResult.error_count) === 1 ? "" : "s"}</>
+                ) : null}
+              </>
+            ) : (
+              <span className="capitalize">
+                {String(lastResult.kind)} {lastResult.cancelled ? "cancelled" : "finished"}
+              </span>
+            )}
           </AlertTitle>
           <AlertDescription>
             {lastResult.cancelled ? (
               <>{String(lastResult.note ?? "")}</>
             ) : (
               <>
-                <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-                  {typeof lastResult.summary === "string"
-                    ? lastResult.summary
-                    : JSON.stringify(lastResult, null, 2)}
-                </pre>
+                {typeof lastResult.summary === "string" && (
+                  <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                    {lastResult.summary}
+                  </pre>
+                )}
+                {typeof lastResult.summary !== "string" &&
+                  !Array.isArray(lastResult.error_samples) && (
+                    <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                      {JSON.stringify(lastResult, null, 2)}
+                    </pre>
+                  )}
+                {Array.isArray(lastResult.error_samples) && lastResult.error_samples.length > 0 && (
+                  <div className="mt-1">
+                    <p className="text-xs font-semibold">First errors:</p>
+                    <ul className="list-disc pl-4 text-xs">
+                      {lastResult.error_samples.map((sample, index) => (
+                        <li key={index} className="font-mono">{String(sample)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {typeof lastResult.note === "string" && lastResult.note && (
                   <p className="mt-1 font-sans text-xs">{lastResult.note}</p>
                 )}

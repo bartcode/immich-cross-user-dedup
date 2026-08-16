@@ -30,7 +30,7 @@ import httpx
 
 PAGE_SIZE = 1000  # API maximum for search/metadata
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-MAX_RETRIES = 3
+MAX_RETRIES = 5  # transient failures (rate limits, hiccups) get 0.5+1+2+4+8s of backoff
 BACKOFF_BASE = 0.5  # seconds; doubles per retry
 
 

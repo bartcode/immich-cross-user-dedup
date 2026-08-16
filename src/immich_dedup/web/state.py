@@ -184,6 +184,7 @@ class Session:
                 status.running = False
                 status.finished_at = _now()
                 status.error = f"{type(error).__name__}: {error}"
+            print(f"[job] {kind} failed: {status.error}")  # visible in container logs
 
     # -- helpers ------------------------------------------------------------
 

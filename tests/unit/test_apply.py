@@ -196,3 +196,43 @@ def test_journal_entries_are_json_lines(tmp_path: Path):
 
     for line in (tmp_path / "j.jsonl").read_text().splitlines():
         json.loads(line)  # every line parses
+
+
+def test_apply_aborts_on_permission_error_instead_of_failing_per_group(tmp_path: Path):
+    """The '2362/2362 errors' scenario: when every trash is denied (e.g. the
+    secondary key lacks asset.delete), the run aborts on the first group with a
+    clear message and leaves the remaining groups untouched."""
+    world = World()
+    fake = world.fake
+    primary, secondaries, users = world.users()
+    # restrict the secondary's key: read scopes only, no asset.delete
+    restricted_key = fake.add_api_key(
+        world.s_id,
+        permissions=[
+            "user.read", "partner.read", "asset.read", "asset.view", "asset.statistics",
+            "album.read", "albumAsset.create", "albumAsset.delete", "albumUser.create", "albumUser.delete",
+        ],
+    )
+    world.client.close()
+    from ..fakes.immich_api import make_client
+
+    keys = dict(world.keys)
+    keys["secondary@example.com"] = restricted_key
+    world.client = make_client(fake, keys)
+
+    losers = []
+    for i in range(5):
+        fake.add_asset(world.p_id, f"sum-{i}")
+        losers.append(fake.add_asset(world.s_id, f"sum-{i}"))
+    primary, secondaries, users = world.users(strict=False)
+
+    result = scan(world.client, primary, secondaries, users=users)
+    journal = Journal(tmp_path / "j.jsonl")
+    outcome = apply_groups(world.client, result, ApplyOptions(), journal)
+    journal.close()
+
+    assert outcome.aborted and "permission denied trashing" in outcome.aborted
+    assert "asset.delete" in outcome.aborted
+    assert outcome.applied_groups == 0  # aborted before counting the first group
+    assert all(not fake.asset(loser)["trashed"] for loser in losers)  # nothing touched
+    assert "ABORTED" in outcome.summary()

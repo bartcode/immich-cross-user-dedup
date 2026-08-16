@@ -326,15 +326,25 @@ def create_app(
             journal = Journal(session.new_journal_path())
             try:
                 outcome = apply_groups(session.client, result, options, journal, progress=progress)
-                summary = outcome.summary()
             finally:
                 journal.close()
                 # the library changed — the snapshot is stale, so clear it and
                 # keep only the user's exclusions for the next scan
                 session.save_exclusions(result.excluded)
                 session.clear_scan()
+            if outcome.errors or outcome.aborted:
+                # errors must be visible in the container logs, not just the UI
+                print(f"[apply] {outcome.summary()}")
             return {
-                "summary": summary,
+                "headline": (
+                    f"{outcome.applied_groups} of {len(result.eligible_groups())} eligible groups "
+                    f"processed, {outcome.trashed_assets} assets moved to trash"
+                ),
+                "status": "aborted" if outcome.aborted else "finished",
+                "summary": outcome.summary(),
+                "error_count": len(outcome.errors),
+                "error_samples": outcome.errors[:5],
+                "aborted": bool(outcome.aborted),
                 "journal": journal.path.name,
                 "note": "scan state cleared — re-scan to see what remains",
             }
