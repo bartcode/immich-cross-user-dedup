@@ -33,6 +33,8 @@ ROUTE_SCOPES: list[tuple[str, re.Pattern[str], str]] = [
     ("PUT", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.create"),
     ("POST", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.create"),
     ("DELETE", re.compile(r"^/api/albums/[^/]+/assets$"), "albumAsset.delete"),
+    ("PUT", re.compile(r"^/api/albums/[^/]+/users$"), "albumUser.create"),
+    ("DELETE", re.compile(r"^/api/albums/[^/]+/user/[^/]+$"), "albumUser.delete"),
     ("DELETE", re.compile(r"^/api/assets$"), "asset.delete"),
     ("POST", re.compile(r"^/api/trash/restore/assets$"), "asset.delete"),
     ("PUT", re.compile(r"^/api/assets/[^/]+$"), "asset.update"),
@@ -234,6 +236,13 @@ class FakeImmich:
             album_id = path.split("/")[3]
             return self._album_assets(user, request, album_id, add=method in ("PUT", "POST"))
 
+        if method == "PUT" and path.startswith("/api/albums/") and path.endswith("/users"):
+            return self._album_share_user(user, request, path.split("/")[3])
+
+        if method == "DELETE" and path.startswith("/api/albums/") and "/user/" in path:
+            parts = path.split("/")
+            return self._album_remove_user(user, parts[3], parts[5])
+
         if method == "DELETE" and path == "/api/assets":
             return self._delete_assets(user, request)
 
@@ -337,6 +346,26 @@ class FakeImmich:
                 else:
                     results.append({"id": asset_id, "success": False, "error": "not_found"})
         return httpx.Response(200, json=results)
+
+    def _album_share_user(self, user: dict, request: httpx.Request, album_id: str) -> httpx.Response:
+        album = self.albums.get(album_id)
+        if album is None:
+            return httpx.Response(404, json={"message": "Album not found"})
+        if album["ownerId"] != user["id"]:
+            return httpx.Response(403, json={"message": "Only the album owner can share the album"})
+        for entry in json.loads(request.content).get("albumUsers", []):
+            album["users"][entry.get("userId", "")] = entry.get("role", "editor")
+        return httpx.Response(200, json=self._album_response(album))
+
+    def _album_remove_user(self, user: dict, album_id: str, user_id: str) -> httpx.Response:
+        album = self.albums.get(album_id)
+        if album is None:
+            return httpx.Response(404, json={"message": "Album not found"})
+        if album["ownerId"] != user["id"]:
+            return httpx.Response(403, json={"message": "Only the album owner can manage sharing"})
+        if album["users"].pop(user_id, None) is None:
+            return httpx.Response(404, json={"message": "User not in album"})
+        return httpx.Response(204)
 
     def _delete_assets(self, user: dict, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)

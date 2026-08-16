@@ -139,20 +139,48 @@ def undo_journal(
         return True
 
     album_entries = [e for e in entries if e["op"] == "album_add" and e.get("added")]
+    primary_handle = handles.get(header.get("primary_id"))
     for index, entry in enumerate(reversed(album_entries), start=1):
         if progress:
             progress("albums", index, len(album_entries))
         if not loser_available(entry["loser_id"]):
             result.album_rows_kept += 1
             continue
+        # Removal must mirror how the row was added: "owner" rows went in with
+        # the album owner's key (partner fast path), "editor" rows with the
+        # primary's key after the album-editor fallback — only the actor who
+        # passed AssetShare at add time can remove the keeper later.
+        if entry.get("method") == "editor":
+            handle = primary_handle
+        else:
+            handle = handle_for(entry.get("album_owner_id"))
+        if handle is None:
+            continue
+        try:
+            responses = client.remove_album_assets(handle, entry["album_id"], [entry["keeper_id"]])
+            removed = any(response.get("success") for response in responses)
+            if removed:
+                result.album_rows_removed += 1
+            else:
+                result.errors.append(
+                    f"album {entry.get('album_name')}: keeper row not removed "
+                    f"({responses[0].get('error') if responses else 'empty response'})"
+                )
+        except ImmichApiError as error:
+            result.errors.append(f"album {entry.get('album_name')} remove keeper: {error}")
+
+    # Phase 2.5 — revoke album shares the run created (album-editor fallback).
+    share_entries = [e for e in entries if e["op"] == "album_share"]
+    for index, entry in enumerate(reversed(share_entries), start=1):
+        if progress:
+            progress("shares", index, len(share_entries))
         handle = handle_for(entry.get("album_owner_id"))
         if handle is None:
             continue
         try:
-            client.remove_album_assets(handle, entry["album_id"], [entry["keeper_id"]])
-            result.album_rows_removed += 1
+            client.remove_album_user(handle, entry["album_id"], entry["user_id"])
         except ImmichApiError as error:
-            result.errors.append(f"album {entry.get('album_name')} remove keeper: {error}")
+            result.errors.append(f"album {entry.get('album_name')} revoke share: {error}")
 
     # Phase 3 — restore merged metadata (keeper always belongs to the primary).
     meta_entries = [e for e in entries if e["op"] == "meta_merge"]

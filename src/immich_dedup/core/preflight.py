@@ -106,37 +106,22 @@ def run_preflight(client: ImmichClient, config: DedupConfig) -> PreflightReport:
     if report.primary is not None and report.secondaries:
         partners = client.get_partners(report.primary.email)
         shared_by = {p["id"] for p in partners.get("shared-by", [])}
-        shared_with = {p["id"] for p in partners.get("shared-with", [])}
         for secondary in report.secondaries:
-            # primary's "shared-by" lists users primary shares with; its
-            # "shared-with" lists users that share with primary — each secondary
-            # must appear in both.
-            primary_shares = secondary.id in shared_by
-            secondary_shares = secondary.id in shared_with
-            ok = primary_shares and secondary_shares
-            report.partner_status[secondary.email] = ok
-            if ok:
-                checks.append(
-                    Check(
-                        f"partner sharing with {secondary.email}",
-                        True,
-                        "bidirectional — cross-user album transfers are permitted",
-                    )
+            # Only the primary->secondary direction matters mechanically: it
+            # lets the album owner add the primary's keeper with their own key.
+            # Without it, affected albums are shared with the primary as editor
+            # instead (see apply._transfer_foreign_album). Either way works.
+            direct = secondary.id in shared_by
+            report.partner_status[secondary.email] = direct
+            checks.append(
+                Check(
+                    f"partner sharing with {secondary.email}",
+                    True,
+                    f"primary shares with {secondary.email} — direct album transfers"
+                    if direct
+                    else "not enabled — affected albums will be shared with the primary as "
+                    "editor during apply and revoked on undo (partner sharing is optional)",
                 )
-            else:
-                missing = []
-                if not primary_shares:
-                    missing.append(f"{report.primary.email} does not share with {secondary.email}")
-                if not secondary_shares:
-                    missing.append(f"{secondary.email} does not share with {report.primary.email}")
-                checks.append(
-                    Check(
-                        f"partner sharing with {secondary.email}",
-                        False,
-                        "; ".join(missing)
-                        + ". Album membership transfer across users requires partner sharing in both "
-                        "directions (Immich > Account Settings > Partner Sharing).",
-                    )
-                )
+            )
 
     return report

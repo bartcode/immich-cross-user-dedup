@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from immich_dedup.core.apply import ApplyOptions, apply_groups
-from immich_dedup.core.journal import Journal
+from immich_dedup.core.journal import Journal, undo_journal
 from immich_dedup.core.match import scan
 
 from ..fakes.world import World
@@ -149,14 +149,16 @@ def test_apply_is_idempotent_on_rerun(tmp_path: Path):
     assert outcome.applied_groups == 0
 
 
-def test_apply_records_album_failure_without_aborting(tmp_path: Path):
-    """No partner sharing -> cross-user album add fails, recorded, run continues."""
+def test_apply_without_partner_sharing_shares_album_as_editor(tmp_path: Path):
+    """No partner sharing at all: the album owner's key shares the album with
+    the primary as editor, the primary adds the keeper with their own key, and
+    undo revokes both."""
     world = World()
     fake = world.fake
-    fake.partners.clear()  # drop partner sharing
+    fake.partners.clear()
     primary, secondaries, users = world.users(strict=False)
-    keeper = fake.add_asset(world.p_id, "sum-1")
-    loser = fake.add_asset(world.s_id, "sum-1")
+    keeper = fake.add_asset(world.p_id, "sum-1", size_bytes=10)
+    loser = fake.add_asset(world.s_id, "sum-1", size_bytes=10)
     album = fake.add_album(world.s_id, "Trip", asset_ids=[loser])
 
     result = scan(world.client, primary, secondaries, users=users)
@@ -164,14 +166,20 @@ def test_apply_records_album_failure_without_aborting(tmp_path: Path):
     outcome = apply_groups(world.client, result, ApplyOptions(), journal)
     journal.close()
 
-    assert outcome.applied_groups == 1  # group still processed
-    assert outcome.album_failures  # failure recorded
-    assert keeper not in fake.album_asset_ids(album)
-    assert fake.asset(loser)["trashed"] is True  # trash still happened
-    # the failure is journaled with its reason
-    failure = next(e for e in journal.entries() if e["op"] == "album_add")
-    assert failure["added"] is False
-    assert failure["error"]
+    assert outcome.applied_groups == 1
+    assert outcome.album_failures == []
+    assert keeper in fake.album_asset_ids(album)
+    assert fake.albums[album]["users"].get(world.p_id) == "editor"  # primary is now an editor
+
+    entries = journal.entries()
+    assert [e["op"] for e in entries] == ["run_start", "album_share", "album_add", "trash", "run_end"]
+    assert entries[1]["user_id"] == world.p_id
+    assert entries[2]["method"] == "editor"
+
+    undo = undo_journal(world.client, journal)
+    assert undo.errors == []
+    assert keeper not in fake.album_asset_ids(album)  # keeper removed
+    assert world.p_id not in fake.albums[album]["users"]  # share revoked
 
 
 def test_journal_entries_are_json_lines(tmp_path: Path):

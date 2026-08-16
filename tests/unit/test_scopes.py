@@ -24,7 +24,7 @@ PRIMARY_SCOPES = [
     "albumAsset.create",
     "albumAsset.delete",
 ]
-SECONDARY_SCOPES = [*PRIMARY_SCOPES, "asset.delete"]
+SECONDARY_SCOPES = [*PRIMARY_SCOPES, "asset.delete", "albumUser.create", "albumUser.delete"]
 
 
 def key_for(fake: FakeImmich, user_id: str) -> str:
@@ -150,3 +150,36 @@ def test_full_pipeline_works_with_minimal_documented_scopes(tmp_path: Path):
     undo = undo_journal(client, journal)
     assert undo.restored_assets == 1
     assert fake.asset(ids["loser"])["trashed"] is False
+
+
+def test_no_partner_sharing_pipeline_uses_album_editor_fallback(tmp_path: Path):
+    """Partner sharing entirely absent: transfers work by sharing each affected
+    album with the primary as editor (albumUser.create) and revoking on undo
+    (albumUser.delete) — no partner write scopes are involved."""
+    from immich_dedup.core.apply import ApplyOptions, apply_groups
+    from immich_dedup.core.journal import Journal, undo_journal
+    from immich_dedup.core.match import scan
+
+    fake, ids = seeded_world(primary_permissions=PRIMARY_SCOPES, secondary_permissions=SECONDARY_SCOPES)
+    fake.partners.clear()  # no partner sharing at all
+    client = client_for(fake, ids)
+    config = DedupConfig(BASE, P, key_for(fake, ids["p_id"]),
+                         (SecondaryCredentials(S, key_for(fake, ids["s_id"])),))
+
+    report = run_preflight(client, config)
+    assert not report.failed  # informational only
+
+    result = scan(client, report.primary, report.secondaries, users=report.users)
+    journal = Journal(tmp_path / "j.jsonl")
+    outcome = apply_groups(client, result, ApplyOptions(), journal)
+    journal.close()
+    assert outcome.applied_groups == 1
+    assert outcome.album_failures == []
+    assert ids["keeper"] in fake.album_asset_ids(ids["album"])
+    assert fake.albums[ids["album"]]["users"].get(ids["p_id"]) == "editor"
+
+    undo = undo_journal(client, journal)
+    assert undo.errors == []
+    assert undo.restored_assets == 1
+    assert ids["keeper"] not in fake.album_asset_ids(ids["album"])
+    assert ids["p_id"] not in fake.albums[ids["album"]]["users"]

@@ -35,7 +35,7 @@ cross-user duplicates persist silently.
 Immich itself handles all heavy lifting after the trash: purging originals and
 generated thumbnails/previews/encoded videos, quota updates, stack maintenance.
 
-### How media stays accessible to both users
+### How album access works (partner sharing is optional)
 
 After dedup, each photo has exactly one owner (the primary user). Every other
 user still sees all of it because:
@@ -43,16 +43,24 @@ user still sees all of it because:
 1. **Shared albums — automatic.** The keeper joins every album that contained a
    loser, and albums can contain assets from multiple users in Immich. If a
    secondary had the photo in "Summer trip", they still see it there.
-2. **Partner sharing — prerequisite.** Cross-user album additions require
-   partner sharing between the primary and **every** secondary, in both
-   directions (a star around the primary) — the pre-flight check reports each
-   user's status individually. As a bonus, partner sharing keeps the
-   secondaries' *timeline* visibility of deduped photos, not just album
-   visibility.
-3. **Trade-offs.** The secondaries lose direct ownership of the shared copies:
-   they can no longer independently trash/re-upload them, and their copies'
-   face-detection samples disappear with the purge (the primary's copies keep
-   theirs; people are per-owner in Immich).
+2. **How the keeper gets into other users' albums** — one of two ways, chosen
+   automatically per album:
+   - *Direct* (fast path): if the primary shares partner sharing with the album
+     owner, the owner adds the keeper with their own key.
+   - *Album-editor sharing* (no partner sharing needed): the album owner's key
+     shares **that one album** with the primary as editor (`albumUser.create`),
+     the primary adds their own keeper, and undo revokes the share afterwards.
+     Nobody gets access to anyone's full library.
+3. **Partner sharing is a privacy trade-off, not a requirement.** Without it,
+   secondaries keep seeing deduped photos through the albums they always used,
+   but lose *timeline* visibility of duplicates that weren't in any album. With
+   it (either direction), they'd see the primary's whole timeline instead. The
+   pre-flight check reports which mode applies per user — it never fails on
+   missing partner sharing.
+4. **Other trade-offs.** The secondaries lose direct ownership of the shared
+   copies: they can no longer independently trash/re-upload them, and their
+   copies' face-detection samples disappear with the purge (the primary's
+   copies keep theirs; people are per-owner in Immich).
 
 ## Multiple users
 
@@ -68,7 +76,7 @@ what apply would trash from each library.
 - Immich v2/v3 with API access enabled
 - An API key for the primary and for **every** secondary, with the scopes listed
   under [API key scopes](#api-key-scopes) (Account Settings → API Keys)
-- Partner sharing between the primary and each secondary, in both directions
+- Partner sharing is **optional** (see "How album access works" above)
 - A current backup of your Immich instance (the tool only trashes, but still)
 
 ## API key scopes
@@ -86,11 +94,13 @@ albumAsset.create · albumAsset.delete
 (+ asset.update only if you use --merge-metadata)
 ```
 
-**Each secondary key** — same as the primary, plus the trash scope:
+**Each secondary key** — same as the primary, plus the trash and album-sharing
+scopes:
 
 ```text
 user.read · partner.read · asset.read · asset.view · album.read ·
-albumAsset.create · albumAsset.delete · asset.delete
+albumAsset.create · albumAsset.delete · albumUser.create · albumUser.delete ·
+asset.delete
 ```
 
 How the scopes map to the calls this tool makes:
@@ -103,11 +113,16 @@ How the scopes map to the calls this tool makes:
 | `GET /albums` (find albums containing a copy) | `album.read` | ✓ | ✓ |
 | `GET /assets/{id}` (undo checks) | `asset.read` | ✓ | ✓ |
 | `GET /assets/{id}/thumbnail` (previews) | `asset.view` | ✓ | ✓ |
-| `PUT /albums/{id}/assets` (keeper joins albums that user owns) | `albumAsset.create` | ✓ | ✓ |
+| `PUT /albums/{id}/assets` (keeper joins albums) | `albumAsset.create` | ✓ | ✓ |
 | `DELETE /albums/{id}/assets` (undo of those additions) | `albumAsset.delete` | ✓ | ✓ |
+| `PUT /albums/{id}/users` (album-editor sharing fallback, no partner sharing) | `albumUser.create` | — | ✓ |
+| `DELETE /albums/{id}/user/{uid}` (revoke that share on undo) | `albumUser.delete` | — | ✓ |
 | `PUT /assets/{id}` (merge favorites/descriptions, and revert on undo) | `asset.update` | optional | — |
 | `DELETE /assets` with `force: false` (trash **own** copies only) | `asset.delete` | — | ✓ |
 | `POST /trash/restore/assets` (undo) | `asset.delete` | — | ✓ |
+
+(`albumUser.create`/`albumUser.delete` are only exercised when partner sharing
+is absent; include them in the secondary key anyway so the fallback works.)
 
 The read scopes (`user.read`, `partner.read`, `asset.read`, `album.read`) are
 verified per key by the pre-flight check — Immich's error message names any

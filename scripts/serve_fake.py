@@ -33,9 +33,8 @@ def seed() -> tuple[FakeImmich, DedupConfig]:
     for email in (PRIMARY_EMAIL, *SECONDARY_EMAILS):
         user_id, key = fake.add_user(email)
         ids[email], keys[email] = user_id, key
-    for other in SECONDARY_EMAILS:
-        fake.set_partner(ids[PRIMARY_EMAIL], ids[other])
-        fake.set_partner(ids[other], ids[PRIMARY_EMAIL])
+    # deliberately NO partner sharing: the demo exercises the album-editor
+    # sharing fallback (affected albums are shared with the primary on apply)
 
     p, b, c = ids[PRIMARY_EMAIL], ids[SECONDARY_EMAILS[0]], ids[SECONDARY_EMAILS[1]]
     now = datetime.now(UTC)

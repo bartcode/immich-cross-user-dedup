@@ -83,12 +83,28 @@ def test_album_owned_by_third_secondary_is_discovered(tmp_path: Path):
     assert keeper in fake.album_asset_ids(carol_album)
 
 
-def test_missing_partner_for_one_secondary_fails_only_that_album(tmp_path: Path):
+def test_album_transfer_fails_only_without_albumuser_scope(tmp_path: Path):
+    """Carol has neither partner sharing nor the albumUser.create scope: her
+    album transfer fails and is recorded — everything else proceeds."""
     world, bob_id, carol_id = make_world()
     fake = world.fake
-    # drop both partner directions with carol
+    # drop both partner directions with carol AND restrict her key so the
+    # editor-sharing fallback is impossible
     fake.partners.pop((world.p_id, carol_id))
     fake.partners.pop((carol_id, world.p_id))
+    restricted_key = fake.add_api_key(
+        carol_id,
+        permissions=[
+            "user.read", "partner.read", "asset.read", "asset.view", "album.read",
+            "albumAsset.create", "asset.delete",
+        ],  # no albumUser.create
+    )
+    world.client.close()
+    from ..fakes.immich_api import make_client
+
+    keys = dict(world.keys)
+    keys[CAROL] = restricted_key
+    world.client = make_client(fake, keys)
     primary, secondaries, users = world.users(strict=False)
     keeper = fake.add_asset(world.p_id, "group-1", size_bytes=10)
     bob_copy = fake.add_asset(bob_id, "group-1", size_bytes=10)
@@ -101,7 +117,7 @@ def test_missing_partner_for_one_secondary_fails_only_that_album(tmp_path: Path)
     outcome = apply_groups(world.client, result, ApplyOptions(), journal)
     journal.close()
 
-    # bob's transfer works, carol's fails with a permission error — run continues
+    # bob's transfer works (editor fallback), carol's fails with a permission error
     assert keeper in fake.album_asset_ids(bob_album)
     assert keeper not in fake.album_asset_ids(carol_album)
     assert any("Carol album" in failure for failure in outcome.album_failures)

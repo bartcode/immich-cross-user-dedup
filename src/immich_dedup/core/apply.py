@@ -115,26 +115,10 @@ def _transfer_albums(
     journal: Journal,
     outcome: ApplyResult,
 ) -> None:
+    primary_handle = result.primary.email
+    primary_id = result.primary.id
     for loser in losers:
         for album in loser.albums:
-            handle = result.handle_for_owner(album.owner_id)
-            if handle is None:
-                outcome.album_failures.append(
-                    f"{album.name or album.id}: album owner is not a configured user"
-                )
-                journal.append(
-                    {
-                        "op": "album_add",
-                        "album_id": album.id,
-                        "album_name": album.name,
-                        "album_owner_id": album.owner_id,
-                        "keeper_id": group.keeper.id,
-                        "loser_id": loser.id,
-                        "added": False,
-                        "error": "album owner not configured",
-                    }
-                )
-                continue
             entry: dict[str, Any] = {
                 "op": "album_add",
                 "album_id": album.id,
@@ -143,18 +127,85 @@ def _transfer_albums(
                 "keeper_id": group.keeper.id,
                 "loser_id": loser.id,
             }
-            try:
-                responses = client.add_album_assets(handle, album.id, [group.keeper.id])
-                response = responses[0] if responses else {"success": False, "error": "empty_response"}
-                added = bool(response.get("success"))
-                error = response.get("error")
-            except ImmichApiError as api_error:
-                added, error = False, str(api_error)
+
+            if album.owner_id == result.primary.id:
+                added, error, method = _add_to_album(client, primary_handle, album.id, group.keeper.id), None, "owner"
+            else:
+                owner_handle = result.handle_for_owner(album.owner_id)
+                if owner_handle is None:
+                    outcome.album_failures.append(
+                        f"{album.name or album.id}: album owner is not a configured user"
+                    )
+                    journal.append({**entry, "added": False, "error": "album owner not configured"})
+                    continue
+                added, error, method = _transfer_foreign_album(
+                    client, result, owner_handle, primary_handle, primary_id, album, group.keeper.id, journal
+                )
+
             if added:
                 outcome.albums_transferred += 1
             elif error and error != "duplicate":
                 outcome.album_failures.append(f"{album.name or album.id}: {error}")
-            journal.append({**entry, "added": added, "error": error if error != "duplicate" else None})
+            journal.append(
+                {**entry, "added": added, "error": error if error != "duplicate" else None, "method": method}
+            )
+
+
+def _add_to_album(client: ImmichClient, handle: str, album_id: str, asset_id: str) -> bool:
+    responses = client.add_album_assets(handle, album_id, [asset_id])
+    response = responses[0] if responses else {"success": False, "error": "empty_response"}
+    return bool(response.get("success"))
+
+
+def _transfer_foreign_album(
+    client: ImmichClient,
+    result: ScanResult,
+    owner_handle: str,
+    primary_handle: str,
+    primary_id: str,
+    album,
+    keeper_id: str,
+    journal: Journal,
+) -> tuple[bool, str | None, str]:
+    """Transfer the keeper into an album owned by another user.
+
+    Fast path: the owner's key adds the keeper (works when the primary shares a
+    partner relationship with the owner). Otherwise: try the primary's key
+    directly (the primary may already be an album editor), and as a last resort
+    share the album with the primary as editor using the owner's key — journaled
+    so undo revokes it — then add the keeper with the primary's key."""
+    try:
+        if _add_to_album(client, owner_handle, album.id, keeper_id):
+            return True, None, "owner"
+    except ImmichApiError as error:
+        return False, str(error), "owner"
+
+    try:
+        if _add_to_album(client, primary_handle, album.id, keeper_id):
+            return True, None, "editor"
+    except ImmichApiError:
+        pass  # fall through to the sharing fallback
+
+    try:
+        client.share_album_with_user(owner_handle, album.id, primary_id)
+    except ImmichApiError as error:
+        return False, str(error), "editor"
+    journal.append(
+        {
+            "op": "album_share",
+            "album_id": album.id,
+            "album_name": album.name,
+            "album_owner_id": album.owner_id,
+            "user_id": primary_id,
+            "role": "editor",
+        }
+    )
+    try:
+        if _add_to_album(client, primary_handle, album.id, keeper_id):
+            return True, None, "editor"
+    except ImmichApiError as error:
+        return False, str(error), "editor"
+    return False, "empty_response", "editor"
 
 
 def _merge_metadata(client: ImmichClient, result: ScanResult, group, journal: Journal, outcome: ApplyResult) -> None:

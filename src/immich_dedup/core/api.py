@@ -8,6 +8,8 @@ header of the user it is made for. Endpoints used (Immich v3 API):
 - GET    /api/albums[?assetId=...]     (list albums / albums containing an asset)
 - PUT    /api/albums/{id}/assets       (add assets to album; POST on older servers)
 - DELETE /api/albums/{id}/assets       (remove assets from album)
+- PUT    /api/albums/{id}/users        (share album with a user, e.g. as editor)
+- DELETE /api/albums/{id}/user/{uid}   (revoke an album share)
 - DELETE /api/assets                   (trash / hard-delete; {ids, force})
 - POST   /api/trash/restore/assets     (restore from trash)
 - PUT    /api/assets/{id}              (favorite / description / livePhotoVideoId)
@@ -193,6 +195,23 @@ class ImmichClient:
                 handle, "DELETE", f"/api/albums/{album_id}/assets", json={"ids": asset_ids}
             )
         )
+
+    def share_album_with_user(
+        self, handle: str, album_id: str, user_id: str, *, role: str = "editor"
+    ) -> dict[str, Any]:
+        """Share an album with a user (album owner's key; albumUser.create scope)."""
+        return dict(
+            self._request_json(
+                handle,
+                "PUT",
+                f"/api/albums/{album_id}/users",
+                json={"albumUsers": [{"userId": user_id, "role": role}]},
+            )
+        )
+
+    def remove_album_user(self, handle: str, album_id: str, user_id: str) -> None:
+        """Revoke an album share (album owner's key; albumUser.delete scope)."""
+        self._request(handle, "DELETE", f"/api/albums/{album_id}/user/{user_id}")
 
     def trash_assets(self, handle: str, asset_ids: list[str], *, force: bool = False) -> list[dict[str, Any]]:
         return list(

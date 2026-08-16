@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { RefreshCw, ScanSearch, Settings } from "lucide-react"
+import { Info, RefreshCw, ScanSearch, Settings } from "lucide-react"
 import { ApplyPanel } from "@/components/apply-panel"
 import { ConnectionForm } from "@/components/connection-form"
 import { PairRow } from "@/components/pair-row"
@@ -145,8 +145,8 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           {config && (
-            <Badge variant={config.partners_ok ? "secondary" : "destructive"}>
-              {config.partners_ok ? "partner sharing OK" : "partner sharing missing"}
+            <Badge variant={config.partners_ok ? "secondary" : "outline"}>
+              {config.partners_ok ? "partner sharing: direct transfers" : "album-editor sharing"}
             </Badge>
           )}
           <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
@@ -175,11 +175,14 @@ export default function App() {
         </Alert>
       )}
       {config && !config.partners_ok && (
-        <Alert variant="destructive">
-          <AlertTitle>Partner sharing is required</AlertTitle>
+        <Alert>
+          <Info className="size-4" />
+          <AlertTitle>Partner sharing is not enabled — that&apos;s fine</AlertTitle>
           <AlertDescription>
-            Album membership transfer needs partner sharing in both directions between the primary and
-            every secondary (Immich → Account Settings → Partner Sharing).
+            Affected albums will be shared with the primary as <strong>editor</strong> during apply
+            (revoked on undo), so nobody gets access to anyone&apos;s full library. Enable partner
+            sharing in Immich only if the secondaries should also see the primary&apos;s entire
+            timeline.
           </AlertDescription>
         </Alert>
       )}

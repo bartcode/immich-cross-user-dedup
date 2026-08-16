@@ -35,17 +35,20 @@ def test_preflight_fails_on_misassigned_key():
     assert any("belongs to" in check.detail for check in report.checks if not check.ok)
 
 
-def test_preflight_reports_each_secondary_partner_status():
+def test_preflight_reports_partner_status_as_informational():
+    """Missing partner sharing no longer fails pre-flight — the album-editor
+    fallback covers it; the check reports which mode apply will use."""
     world = World(secondary_emails=("bob@example.com", "carol@example.com"))
     carol_id = world.secondary["carol@example.com"][0]
     world.fake.partners.pop((world.p_id, carol_id))  # primary no longer shares with carol
 
     report = world.preflight()
-    assert report.failed
+    assert not report.failed  # informational only
     assert report.partner_status["bob@example.com"] is True
     assert report.partner_status["carol@example.com"] is False
-    failed_names = [check.name for check in report.checks if not check.ok]
-    assert "partner sharing with carol@example.com" in failed_names
+    carol_check = next(c for c in report.checks if c.name == "partner sharing with carol@example.com")
+    assert carol_check.ok is True
+    assert "editor" in carol_check.detail
 
 
 def test_preflight_rejects_primary_listed_as_secondary():

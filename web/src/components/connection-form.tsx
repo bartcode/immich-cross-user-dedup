@@ -9,6 +9,7 @@ import { api, type ConfigDto } from "@/lib/api"
 
 const READ_SCOPES = ["user.read", "partner.read", "asset.read", "asset.view", "album.read"]
 const ALBUM_WRITE_SCOPES = ["albumAsset.create", "albumAsset.delete"]
+const ALBUM_SHARE_SCOPES = ["albumUser.create", "albumUser.delete"]
 
 function ScopeList({ scopes }: { scopes: string[] }) {
   return (
@@ -161,8 +162,9 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
             </div>
             <p className="text-xs text-muted-foreground">
               Select these scopes for the key:{" "}
-              <ScopeList scopes={[...READ_SCOPES, ...ALBUM_WRITE_SCOPES, "asset.delete"]} /> — lists
-              this user&apos;s library, adds the keeper to albums this user owns, and moves{" "}
+              <ScopeList scopes={[...READ_SCOPES, ...ALBUM_WRITE_SCOPES, ...ALBUM_SHARE_SCOPES, "asset.delete"]} />{" "}
+              — lists this user&apos;s library, adds the keeper to albums this user owns (sharing
+              affected albums with the primary as editor when partner sharing is off), and moves{" "}
               <strong>this user&apos;s own</strong> duplicates to trash (restorable via undo). Never
               touches anyone else&apos;s assets.
             </p>
@@ -179,13 +181,13 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
 
         <Alert>
           <Info className="size-4" />
-          <AlertTitle>API key scopes</AlertTitle>
+          <AlertTitle>API key scopes &amp; sharing</AlertTitle>
           <AlertDescription>
             When creating each key in Immich (Account Settings → API Keys), select the scopes listed
             under the corresponding input — or simply the <span className="font-mono text-xs">all</span>{" "}
-            scope. Scopes grant exactly what the key can do; this tool never hard-deletes (only
-            trash, restorable), never modifies other users&apos; assets, and never changes server
-            settings. Read scopes are verified by the pre-flight check when you save.
+            scope. Read scopes are verified by the pre-flight check when you save. Partner sharing is{" "}
+            <strong>optional</strong>: without it, affected albums are shared with the primary as
+            editor during apply and revoked on undo — nobody gets access to anyone&apos;s full library.
           </AlertDescription>
         </Alert>
 
