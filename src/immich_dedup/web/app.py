@@ -390,9 +390,14 @@ def create_app(
                         }
             return None
 
-        def owner_email(user_id: str) -> str:
-            if scan is not None and user_id in scan.users:
-                return scan.users[user_id].email
+        def owner_email(entry: dict[str, Any]) -> str:
+            # journals record the owner's email at write time; the persisted scan
+            # (when still present) covers older journals
+            recorded = entry.get("album_owner_email") or entry.get("owner_email")
+            if recorded:
+                return recorded
+            if scan is not None and entry.get("album_owner_id") in scan.users:
+                return scan.users[entry["album_owner_id"]].email
             return ""
 
         assets: dict[str, dict[str, Any]] = {}
@@ -423,14 +428,14 @@ def create_app(
                 {
                     "album": entry.get("album_name") or entry.get("album_id"),
                     "keeper_name": keeper_name,
-                    "owner_email": owner_email(entry.get("album_owner_id", "")),
+                    "owner_email": owner_email(entry),
                     "method": entry.get("method", "owner"),
                 }
             )
         shares = [
             {
                 "album": entry.get("album_name") or entry.get("album_id"),
-                "owner_email": owner_email(entry.get("album_owner_id", "")),
+                "owner_email": owner_email(entry),
             }
             for entry in entries
             if entry["op"] == "album_share"

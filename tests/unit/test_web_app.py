@@ -377,34 +377,49 @@ def test_journal_undo_detail_lists_restored_assets(world, tmp_path):
 
 def test_journal_undo_detail_falls_back_to_scan_for_old_journals(world, tmp_path):
     """Journals written before per-asset enrichment still resolve names via the
-    persisted scan."""
+    scan when one is present (apply clears the scan, so this craft a legacy
+    journal by hand next to a live scan)."""
     import json as jsonlib
 
     fake = world.fake
-    fake.add_asset(world.p_id, "cat.jpg", file_name="cat.jpg", size_bytes=123)
+    keeper = fake.add_asset(world.p_id, "cat.jpg", file_name="cat.jpg", size_bytes=123)
     loser = fake.add_asset(world.s_id, "cat.jpg", file_name="cat.jpg", size_bytes=123)
-    fake.add_album(world.s_id, "Cats", asset_ids=[loser])
+    album = fake.add_album(world.s_id, "Cats", asset_ids=[loser])
     api, _ = build_app(world, tmp_path)
     api.post("/api/scan")
     wait_for_job(api)
-    api.post("/api/apply", json={})
-    wait_for_job(api)
 
-    journals = api.get("/api/journals").json()
-    name = journals[0]["name"]
-    # strip the enrichment to emulate a legacy journal
-    path = tmp_path / name
-    entries = [jsonlib.loads(line) for line in path.read_text().splitlines() if line]
-    for entry in entries:
-        entry.pop("assets", None)
-        entry.pop("keeper_name", None)
-        entry.pop("loser_name", None)
-    path.write_text("\n".join(jsonlib.dumps(entry) for entry in entries) + "\n")
+    # a journal in the pre-enrichment shape: ids only, no names/emails
+    legacy = tmp_path / "dedup_apply_legacy-test.jsonl"
+    entries = [
+        {
+            "op": "run_start",
+            "primary_id": world.p_id,
+            "secondary_id": world.s_id,
+            "users": [
+                {"id": world.p_id, "email": "primary@example.com"},
+                {"id": world.s_id, "email": "secondary@example.com"},
+            ],
+        },
+        {
+            "op": "album_add",
+            "album_id": album,
+            "album_name": "Cats",
+            "album_owner_id": world.s_id,
+            "keeper_id": keeper,
+            "loser_id": loser,
+            "added": True,
+            "method": "owner",
+        },
+        {"op": "trash", "owner_id": world.s_id, "asset_ids": [loser]},
+    ]
+    legacy.write_text("\n".join(jsonlib.dumps(entry) for entry in entries) + "\n")
 
-    detail = api.get(f"/api/journals/{name}").json()
+    detail = api.get("/api/journals/dedup_apply_legacy-test.jsonl").json()
     restored = {asset["id"]: asset for asset in detail["undo_detail"]["assets"]}
     assert restored[loser]["name"] == "cat.jpg"  # resolved from the stored scan
     assert detail["undo_detail"]["albums"][0]["keeper_name"] == "cat.jpg"
+    assert detail["undo_detail"]["albums"][0]["owner_email"] == "secondary@example.com"
 
 
 def test_job_endpoint_includes_stats_while_a_job_runs(tmp_path):
