@@ -112,20 +112,30 @@ def test_album_transfer_fails_only_without_albumuser_scope(tmp_path: Path):
     bob_album = fake.add_album(bob_id, "Bob album", asset_ids=[bob_copy])
     carol_album = fake.add_album(carol_id, "Carol album", asset_ids=[carol_copy])
 
+    # a later group that only bob has: must still be processed after carol's block
+    late_keeper = fake.add_asset(world.p_id, "late-group", size_bytes=10)
+    late_bob = fake.add_asset(bob_id, "late-group", size_bytes=10)
+    late_album = fake.add_album(bob_id, "Bob late album", asset_ids=[late_bob])
+
     result = scan(world.client, primary, secondaries, users=users)
     journal = Journal(tmp_path / "j.jsonl")
     outcome = apply_groups(world.client, result, ApplyOptions(), journal)
     journal.close()
 
-    # bob's transfer works (editor fallback), carol's fails with a permission error
+    # bob's transfers work (editor fallback); carol's share is denied -> she is
+    # BLOCKED for the rest of the run instead of failing once per album
     assert keeper in fake.album_asset_ids(bob_album)
     assert keeper not in fake.album_asset_ids(carol_album)
-    assert any("Carol album" in failure for failure in outcome.album_failures)
-    # bob's loser is trashed; carol's is KEPT — trashing it would remove the
-    # photo from her album with no replacement
+    assert CAROL in outcome.blocked_owners
+    assert "albumUser.create" in outcome.blocked_owners[CAROL]
+    # bob's loser is trashed; carol's is KEPT (one grouped counter, no spam)
     assert fake.asset(bob_copy)["trashed"] is True
     assert fake.asset(carol_copy)["trashed"] is False
-    assert any("kept duplicate" in error for error in outcome.errors)
+    assert outcome.kept_blocked == 1
+    # later bob-only groups still processed after the block
+    assert late_keeper in fake.album_asset_ids(late_album)
+    assert fake.asset(late_bob)["trashed"] is True
+    assert not outcome.aborted
 
 
 def test_secondary_only_group_skipped_and_untouched(tmp_path: Path):

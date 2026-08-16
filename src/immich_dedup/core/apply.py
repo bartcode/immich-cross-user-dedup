@@ -33,9 +33,23 @@ class ApplyResult:
     trashed_per_user: dict[str, int] = field(default_factory=dict)
     metadata_merges: int = 0
     errors: list[str] = field(default_factory=list)
+    # owner email -> reason; losers of blocked owners are skipped for the rest
+    # of the run (their album permissions failed systemically)
+    blocked_owners: dict[str, str] = field(default_factory=dict)
+    # losers kept because their owner was blocked (reported as one number,
+    # not one error each)
+    kept_blocked: int = 0
     # set when a permission error makes every remaining group hopeless; the
     # run stops instead of failing the same way thousands of times
     aborted: str | None = None
+
+    def album_failure_reasons(self) -> dict[str, int]:
+        """Aggregate album failures by their reason ('album: reason' -> reason)."""
+        counts: dict[str, int] = {}
+        for failure in self.album_failures:
+            reason = failure.split(": ", 1)[-1]
+            counts[reason] = counts.get(reason, 0) + 1
+        return dict(sorted(counts.items(), key=lambda item: -item[1]))
 
     def summary(self) -> str:
         per_user = ", ".join(f"{email}: {count}" for email, count in sorted(self.trashed_per_user.items()))
@@ -44,9 +58,17 @@ class ApplyResult:
             f"Losers skipped:    {self.skipped_losers} (live-photo motion policy)",
             f"Albums joined:     {self.albums_transferred}",
             f"Album failures:    {len(self.album_failures)}",
-            f"Assets trashed:    {self.trashed_assets}" + (f" ({per_user})" if per_user else ""),
-            f"Metadata merges:   {self.metadata_merges}",
         ]
+        for reason, count in self.album_failure_reasons().items():
+            lines.append(f"  {count}× {reason[:120]}")
+        for owner, reason in self.blocked_owners.items():
+            lines.append(f"BLOCKED {owner}: {reason}")
+        if self.kept_blocked:
+            lines.append(f"Losers kept (blocked owner): {self.kept_blocked}")
+        lines.append(
+            f"Assets trashed:    {self.trashed_assets}" + (f" ({per_user})" if per_user else ""),
+        )
+        lines.append(f"Metadata merges:   {self.metadata_merges}")
         if self.aborted:
             lines.append(f"ABORTED:           {self.aborted}")
         if self.errors:
@@ -126,7 +148,11 @@ def apply_groups(
 
 
 def _permission_denied(error: ImmichApiError) -> bool:
-    return error.status_code == 403
+    """True for API-key SCOPE denials ('Missing required permission: ...').
+    Other 403s (e.g. 'not an album owner or editor') are access-level and may
+    be expected — e.g. the primary's pre-share add attempt — so they must not
+    abort the run."""
+    return error.status_code == 403 and "Missing required permission" in str(error)
 
 
 def _transfer_albums(
@@ -147,6 +173,10 @@ def _transfer_albums(
     primary_id = result.primary.id
     safe_losers: set[str] = set()
     for loser in losers:
+        if loser.owner_email in outcome.blocked_owners:
+            # this owner's album permissions failed earlier — every remaining
+            # album of theirs would fail identically, so skip without trying
+            continue
         loser_ok = True
         for album in loser.albums:
             entry: dict[str, Any] = {
@@ -163,9 +193,14 @@ def _transfer_albums(
 
             if album.owner_id == result.primary.id:
                 try:
-                    added = _add_to_album(client, primary_handle, album.id, group.keeper.id)
-                    error, method = None, "owner"
+                    added, error = _add_to_album(client, primary_handle, album.id, group.keeper.id)
+                    method = "owner"
                 except ImmichApiError as api_error:
+                    if _permission_denied(api_error):
+                        # the primary key cannot add to albums at all — every
+                        # album transfer in the run would fail
+                        outcome.aborted = f"permission denied joining albums — {api_error} "
+                        "(check the primary API key's albumAsset.create scope)"
                     added, error, method = False, str(api_error), "owner"
             else:
                 owner_handle = result.handle_for_owner(album.owner_id)
@@ -174,6 +209,7 @@ def _transfer_albums(
                         f"{album.name or album.id}: album owner is not a configured user"
                     )
                     journal.append({**entry, "added": False, "error": "album owner not configured"})
+                    loser_ok = False
                     continue
                 added, error, method = _transfer_foreign_album(
                     client,
@@ -185,6 +221,7 @@ def _transfer_albums(
                     group.keeper.id,
                     group.keeper.original_file_name,
                     journal,
+                    outcome,
                 )
 
             if added:
@@ -195,15 +232,21 @@ def _transfer_albums(
             journal.append(
                 {**entry, "added": added, "error": error if error != "duplicate" else None, "method": method}
             )
+            if outcome.aborted:
+                return safe_losers
         if loser_ok:
             safe_losers.add(loser.id)
     return safe_losers
 
 
-def _add_to_album(client: ImmichClient, handle: str, album_id: str, asset_id: str) -> bool:
+def _add_to_album(client: ImmichClient, handle: str, album_id: str, asset_id: str) -> tuple[bool, str | None]:
+    """Returns (added, per-id error). Immich reports per-asset errors (e.g.
+    no_permission) with HTTP 200, so the response body must be inspected."""
     responses = client.add_album_assets(handle, album_id, [asset_id])
-    response = responses[0] if responses else {"success": False, "error": "empty_response"}
-    return bool(response.get("success"))
+    response = responses[0] if responses else None
+    if response is None:
+        return False, "empty_response"
+    return bool(response.get("success")), response.get("error")
 
 
 def _transfer_foreign_album(
@@ -216,6 +259,7 @@ def _transfer_foreign_album(
     keeper_id: str,
     keeper_name: str,
     journal: Journal,
+    outcome: ApplyResult,
 ) -> tuple[bool, str | None, str]:
     """Transfer the keeper into an album owned by another user.
 
@@ -223,41 +267,68 @@ def _transfer_foreign_album(
     partner relationship with the owner). Otherwise: try the primary's key
     directly (the primary may already be an album editor), and as a last resort
     share the album with the primary as editor using the owner's key — journaled
-    so undo revokes it — then add the keeper with the primary's key."""
+    so undo revokes it — then add the keeper with the primary's key.
+
+    A permission failure on the share step blocks the owner for the rest of the
+    run (their key likely lacks albumUser.create) instead of failing once per
+    album; a permission failure on the primary's own add aborts the run."""
+    owner_email = result.handle_for_owner(album.owner_id) or ""
     try:
-        if _add_to_album(client, owner_handle, album.id, keeper_id):
+        added, error = _add_to_album(client, owner_handle, album.id, keeper_id)
+        if added:
             return True, None, "owner"
-    except ImmichApiError as error:
-        return False, str(error), "owner"
+    except ImmichApiError as api_error:
+        return False, str(api_error), "owner"
 
     try:
-        if _add_to_album(client, primary_handle, album.id, keeper_id):
+        added, error = _add_to_album(client, primary_handle, album.id, keeper_id)
+        if added:
             return True, None, "editor"
-    except ImmichApiError:
-        pass  # fall through to the sharing fallback
+    except ImmichApiError as api_error:
+        if _permission_denied(api_error):
+            outcome.aborted = (
+                f"permission denied joining albums — {api_error} "
+                "(check the primary API key's albumAsset.create scope)"
+            )
+            return False, str(api_error), "editor"
+        # other errors: fall through to the sharing fallback
 
     try:
         client.share_album_with_user(owner_handle, album.id, primary_id)
-    except ImmichApiError as error:
-        return False, str(error), "editor"
+    except ImmichApiError as api_error:
+        if _permission_denied(api_error):
+            outcome.blocked_owners[owner_email] = (
+                f"permission denied sharing albums — {api_error} "
+                "(check this user's albumUser.create scope, or enable partner sharing)"
+            )
+            outcome.album_failures.append(f"{album.name or album.id}: {api_error}")
+        return False, str(api_error), "editor"
     journal.append(
         {
             "op": "album_share",
             "album_id": album.id,
             "album_name": album.name,
             "album_owner_id": album.owner_id,
-            "album_owner_email": result.handle_for_owner(album.owner_id) or "",
+            "album_owner_email": owner_email,
             "user_id": primary_id,
             "keeper_name": keeper_name,
             "role": "editor",
         }
     )
     try:
-        if _add_to_album(client, primary_handle, album.id, keeper_id):
+        added, error = _add_to_album(client, primary_handle, album.id, keeper_id)
+        if added:
             return True, None, "editor"
-    except ImmichApiError as error:
-        return False, str(error), "editor"
-    return False, "empty_response", "editor"
+        if error and error != "duplicate":
+            return False, error, "editor"
+    except ImmichApiError as api_error:
+        if _permission_denied(api_error):
+            outcome.aborted = (
+                f"permission denied joining albums — {api_error} "
+                "(check the primary API key's albumAsset.create scope)"
+            )
+        return False, str(api_error), "editor"
+    return added is True, error if error != "duplicate" else None, "editor"
 
 
 def _merge_metadata(client: ImmichClient, result: ScanResult, group, journal: Journal, outcome: ApplyResult) -> None:
@@ -294,6 +365,9 @@ def _trash_losers(
     trashed_ids: set[str],
 ) -> None:
     for loser in losers:
+        if loser.owner_email in outcome.blocked_owners:
+            outcome.kept_blocked += 1
+            continue
         if loser.id not in safe_losers:
             outcome.errors.append(
                 f"kept duplicate {loser.original_file_name} ({loser.id}): its album transfer "

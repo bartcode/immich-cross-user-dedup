@@ -318,6 +318,31 @@ export default function App() {
                     </ul>
                   </div>
                 )}
+                {lastResult.album_failure_reasons &&
+                  Object.keys(lastResult.album_failure_reasons).length > 0 && (
+                    <div className="mt-1">
+                      <p className="text-xs font-semibold">Album failures by reason:</p>
+                      <ul className="list-disc pl-4 text-xs">
+                        {Object.entries(lastResult.album_failure_reasons).map(([reason, count]) => (
+                          <li key={reason} className="font-mono">
+                            {String(count)}× {reason}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                {lastResult.blocked_owners && Object.keys(lastResult.blocked_owners).length > 0 && (
+                  <div className="mt-1">
+                    <p className="text-xs font-semibold">Blocked users (their copies were kept):</p>
+                    <ul className="list-disc pl-4 text-xs">
+                      {Object.entries(lastResult.blocked_owners).map(([owner, reason]) => (
+                        <li key={owner}>
+                          <span className="font-semibold">{owner}</span> — {String(reason)}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {typeof lastResult.note === "string" && lastResult.note && (
                   <p className="mt-1 font-sans text-xs">{lastResult.note}</p>
                 )}

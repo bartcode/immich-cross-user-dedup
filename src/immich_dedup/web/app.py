@@ -332,8 +332,8 @@ def create_app(
                 # keep only the user's exclusions for the next scan
                 session.save_exclusions(result.excluded)
                 session.clear_scan()
-            if outcome.errors or outcome.aborted:
-                # errors must be visible in the container logs, not just the UI
+            if outcome.errors or outcome.aborted or outcome.album_failures:
+                # problems must be visible in the container logs, not just the UI
                 print(f"[apply] {outcome.summary()}")
             return {
                 "headline": (
@@ -344,6 +344,8 @@ def create_app(
                 "summary": outcome.summary(),
                 "error_count": len(outcome.errors),
                 "error_samples": outcome.errors[:5],
+                "album_failure_reasons": outcome.album_failure_reasons(),
+                "blocked_owners": dict(outcome.blocked_owners),
                 "aborted": bool(outcome.aborted),
                 "journal": journal.path.name,
                 "note": "scan state cleared — re-scan to see what remains",
