@@ -289,6 +289,31 @@ uv run python scripts/serve_fake.py   # seeds a fake Immich with test data
 - Large libraries: scanning pages through `/search/metadata` (1000/page); a
   50k-asset library takes a few hundred requests.
 
+## Versioning & releases
+
+Versions are SemVer (`vMAJOR.MINOR.PATCH`) with the number living in one place:
+`src/immich_dedup/__init__.py` (`__version__`), which pyproject reads dynamically —
+the package, both CLIs (`--version`), the `/api/config` payload, the UI footer
+and the Docker image all carry it.
+
+Image tags on ghcr:
+
+| tag | meaning |
+| --- | --- |
+| `main` | latest build of `main` |
+| `X.Y.Z`, `X.Y` | release builds (git tag `vX.Y.Z`) |
+| `sha-<commit>` | exact commit |
+
+To cut a release:
+
+```sh
+# bump __version__ in src/immich_dedup/__init__.py, commit, then:
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+CI builds and pushes the `0.2.0` / `0.2` tagged images; pull with
+`ghcr.io/bartcode/immich-cross-user-dedup:0.2.0`.
+
 ## Development
 
 ```sh

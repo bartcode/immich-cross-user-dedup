@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from immich_dedup import __version__
 from immich_dedup.core.api import ImmichApiError
 from immich_dedup.core.apply import ApplyOptions, apply_groups
 from immich_dedup.core.config import ConfigError, load_config
@@ -135,6 +136,7 @@ def create_app(
     def config_payload() -> dict[str, Any]:
         configured = session.is_configured()
         payload: dict[str, Any] = {
+            "version": __version__,
             "configured": configured,
             "immich_url": session.config.immich_url,
             "primary_email": session.config.primary_email,
@@ -633,6 +635,7 @@ def main() -> None:
     parser.add_argument("--token", default=None, help="require this bearer token on /api requests")
     parser.add_argument("--env-file", default=None)
     args = parser.parse_args()
+    print(f"immich-cross-user-dedup {__version__} — http://{args.host}:{args.port}")
 
     try:
         config = load_config(args.env_file)

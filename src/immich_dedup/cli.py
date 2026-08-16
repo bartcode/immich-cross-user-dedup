@@ -18,6 +18,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+from immich_dedup import __version__
 from immich_dedup.core.api import ImmichClient
 from immich_dedup.core.apply import MOTION_SKIP, MOTION_TRASH, ApplyOptions, apply_groups
 from immich_dedup.core.config import load_config
@@ -56,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--secondary-email", default=None, help="legacy single-secondary email")
     parser.add_argument("--secondary-api-key", default=None, help="legacy single-secondary API key")
     parser.add_argument("--reports-dir", default=None, help="directory for reports and journals (default: reports/)")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="apply the dedup (album transfer + trash losers)")

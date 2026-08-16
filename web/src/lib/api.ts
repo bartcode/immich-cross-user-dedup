@@ -11,6 +11,7 @@ export interface SecondaryConfigDto {
 }
 
 export interface ConfigDto {
+  version: string
   configured: boolean
   immich_url: string
   primary_email: string

@@ -498,3 +498,11 @@ def test_bulk_exclude_and_include(world, tmp_path):
 
     assert api.post("/api/pairs/bulk", json={"action": "nope", "checksums": []}).status_code == 400
     assert api.post("/api/pairs/bulk", json={"action": "exclude", "checksums": ["nope"]}).status_code == 404
+
+
+def test_config_payload_carries_version(world, tmp_path):
+    api, _ = build_app(world, tmp_path)
+    payload = api.get("/api/config").json()
+    from immich_dedup import __version__
+
+    assert payload["version"] == __version__

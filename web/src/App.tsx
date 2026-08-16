@@ -320,7 +320,8 @@ export default function App() {
           ← {prevStep?.label ?? "Back"}
         </Button>
         <p className="text-xs text-muted-foreground">
-          immich-cross-user-dedup · dry-run first, apply in small batches, undo until purge
+          immich-cross-user-dedup{config?.version ? ` v${config.version}` : ""} · dry-run first, apply
+          in small batches, undo until purge
         </p>
         <Button
           variant="outline"
