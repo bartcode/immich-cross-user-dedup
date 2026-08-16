@@ -46,8 +46,25 @@ def build_app(fake, p_id, s_id, config, client, tmp_path, token=None):
         config=config,
         client=client,
         reports_dir=pathlib.Path(tmp_path),
+        env_file=pathlib.Path(tmp_path) / ".env",
     )
     app = create_app(session, token=token, web_dist=None)
+    return TestClient(app), session
+
+
+def build_unconfigured_app(tmp_path):
+    import pathlib
+
+    from immich_dedup.core.api import ImmichClient
+    from immich_dedup.core.config import empty_config
+
+    session = Session(
+        config=empty_config(reports_dir=pathlib.Path(tmp_path) / "reports"),
+        client=ImmichClient("", "unset", "unset"),
+        reports_dir=pathlib.Path(tmp_path) / "reports",
+        env_file=pathlib.Path(tmp_path) / ".env",
+    )
+    app = create_app(session, web_dist=None)
     return TestClient(app), session
 
 
@@ -154,6 +171,90 @@ def test_token_auth(setup, tmp_path):
     assert api.get("/api/config").status_code == 401
     assert api.get("/api/config", headers={"Authorization": "Bearer s3cret"}).status_code == 200
     assert api.get("/api/config", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_unconfigured_app_reports_and_guards(tmp_path):
+    api, session = build_unconfigured_app(tmp_path)
+
+    payload = api.get("/api/config").json()
+    assert payload["configured"] is False
+    assert payload["checks"] == []
+
+    assert api.post("/api/scan").status_code == 409
+    assert api.post("/api/undo", json={"name": "x"}).status_code == 409
+
+
+def wire_fake_client(session, fake):
+    """Make Session.reconfigure build fake-wired clients instead of real ones."""
+    original_reconfigure = session.reconfigure
+
+    def reconfigure_with_fake(**kwargs):
+        kwargs["client_factory"] = lambda cfg: make_client(fake, cfg.primary_api_key, cfg.secondary_api_key)
+        return original_reconfigure(**kwargs)
+
+    session.reconfigure = reconfigure_with_fake
+
+
+def test_configure_via_api_swaps_client_and_persists(setup, tmp_path):
+    fake, p_id, s_id, config, client = setup
+    fake.add_asset(p_id, "sum-1")
+    fake.add_asset(s_id, "sum-1")
+
+    api, session = build_unconfigured_app(tmp_path)
+    wire_fake_client(session, fake)
+
+    response = api.post(
+        "/api/config",
+        json={
+            "immich_url": "http://immich.test/",
+            "primary_email": "Primary@Example.com",
+            "secondary_email": "secondary@example.com",
+            "primary_api_key": config.primary_api_key,
+            "secondary_api_key": config.secondary_api_key,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured"] is True
+    assert payload["partners_bidirectional"] is True
+    assert payload["immich_url"] == "http://immich.test"  # trailing slash stripped
+
+    # .env persisted with normalized values
+    env_text = (tmp_path / ".env").read_text()
+    assert "IMMICH_URL=http://immich.test" in env_text
+    assert "PRIMARY_EMAIL=primary@example.com" in env_text
+
+    # the swapped client works end to end
+    api.post("/api/scan")
+    wait_for_job(api)
+    assert api.get("/api/pairs").json()["total"] == 1
+
+
+def test_reconfigure_blank_keys_keep_existing(setup, tmp_path):
+    fake, p_id, s_id, config, client = setup
+    api, session = build_app(fake, p_id, s_id, config, client, tmp_path)
+    wire_fake_client(session, fake)
+
+    api.post(
+        "/api/config",
+        json={
+            "immich_url": "http://immich.test",
+            "primary_email": "primary@example.com",
+            "secondary_email": "secondary@example.com",
+        },
+    )
+    assert session.config.primary_api_key == config.primary_api_key
+    assert session.config.secondary_api_key == config.secondary_api_key
+
+
+def test_reconfigure_rejects_missing_fields(setup, tmp_path):
+    fake, p_id, s_id, config, client = setup
+    api, _ = build_app(fake, p_id, s_id, config, client, tmp_path)
+    response = api.post(
+        "/api/config",
+        json={"immich_url": "", "primary_email": "a@x.com", "secondary_email": "b@x.com"},
+    )
+    assert response.status_code == 400
 
 
 def test_fuzzy_endpoint(setup, tmp_path):

@@ -5,9 +5,12 @@ export interface CheckDto {
 }
 
 export interface ConfigDto {
+  configured: boolean
   immich_url: string
   primary_email: string
   secondary_email: string
+  primary_key_set: boolean
+  secondary_key_set: boolean
   partners_bidirectional: boolean
   checks: CheckDto[]
 }
@@ -121,6 +124,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => request<ConfigDto>("/api/config"),
+  setConfig: (body: {
+    immich_url: string
+    primary_email: string
+    secondary_email: string
+    primary_api_key?: string
+    secondary_api_key?: string
+  }) => request<ConfigDto>("/api/config", { method: "POST", body: JSON.stringify(body) }),
   scan: () => request<JobDto>("/api/scan", { method: "POST" }),
   job: () => request<JobStatusResponse>("/api/job"),
   stats: () => request<StatsDto>("/api/stats"),

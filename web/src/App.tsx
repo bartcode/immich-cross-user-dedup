@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { RefreshCw, ScanSearch } from "lucide-react"
+import { RefreshCw, ScanSearch, Settings } from "lucide-react"
 import { ApplyPanel } from "@/components/apply-panel"
+import { ConnectionForm } from "@/components/connection-form"
 import { PairRow } from "@/components/pair-row"
 import { StepsBar, type StepId } from "@/components/steps-bar"
 import { UndoPanel } from "@/components/undo-panel"
@@ -8,6 +9,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
@@ -34,9 +43,24 @@ export default function App() {
   const [filter, setFilter] = useState<Filter>("eligible")
   const [offset, setOffset] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   const busy = job?.running ?? false
+
+  const reloadConfig = useCallback(() => {
+    api
+      .config()
+      .then((payload) => {
+        setConfig(payload)
+        setJob(null)
+        setStats(null)
+        setLastResult(null)
+        setSettingsOpen(false)
+        setRefreshKey((key) => key + 1)
+      })
+      .catch((cause) => setConfigError(String(cause)))
+  }, [])
 
   const loadPairs = useCallback(() => {
     api
@@ -90,6 +114,21 @@ export default function App() {
 
   const step = deriveStep(job, stats, lastResult)
 
+  if (config && !config.configured) {
+    return (
+      <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 p-6">
+        <h1 className="text-2xl font-semibold tracking-tight">Immich cross-user dedup</h1>
+        {configError && (
+          <Alert variant="destructive">
+            <AlertTitle>Backend error</AlertTitle>
+            <AlertDescription>{configError}</AlertDescription>
+          </Alert>
+        )}
+        <ConnectionForm current={config} onConfigured={reloadConfig} />
+      </div>
+    )
+  }
+
   return (
     <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -105,11 +144,29 @@ export default function App() {
             </p>
           )}
         </div>
-        {config && (
-          <Badge variant={config.partners_bidirectional ? "secondary" : "destructive"}>
-            {config.partners_bidirectional ? "partner sharing OK" : "partner sharing missing"}
-          </Badge>
-        )}
+        <div className="flex items-center gap-2">
+          {config && (
+            <Badge variant={config.partners_bidirectional ? "secondary" : "destructive"}>
+              {config.partners_bidirectional ? "partner sharing OK" : "partner sharing missing"}
+            </Badge>
+          )}
+          <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline" size="sm" disabled={busy}>
+                <Settings /> Connection
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-xl">
+              <DialogHeader>
+                <DialogTitle>Connection settings</DialogTitle>
+                <DialogDescription>
+                  Changing these resets the current session (scan results and exclusions).
+                </DialogDescription>
+              </DialogHeader>
+              <ConnectionForm current={config} onConfigured={reloadConfig} />
+            </DialogContent>
+          </Dialog>
+        </div>
       </header>
 
       {configError && (

@@ -67,7 +67,14 @@ Requires [uv](https://docs.astral.sh/uv/) (Python 3.11+):
 ```sh
 git clone https://github.com/bartcode/immich-cross-user-dedup.git
 cd immich-cross-user-dedup
-make setup                # uv sync + frontend build
+make setup
+```
+
+For the **web UI** you can skip the `.env` entirely — run `make ui` and configure
+the connection (URL, emails, API keys) in the browser; it's saved to your local
+`.env` automatically. For the **CLI**, create the config file upfront:
+
+```sh
 cp .env.example .env   # fill in your values
 ```
 
@@ -75,7 +82,7 @@ There's a `Makefile` for the common tasks — `make help` lists them:
 
 | command | what it does |
 | --- | --- |
-| `make ui` | run the web UI against your instance (`ARGS='--port 9000'` to customize) |
+| `make ui` | run the web UI (`ARGS='--port 9000'` to customize) |
 | `make fake` | run the web UI against fake seeded data, no `.env` needed |
 | `make cli` | CLI dry-run report (`ARGS='--apply --limit 20'` to apply) |
 | `make test` / `make lint` | pytest / ruff + frontend lint |
@@ -118,7 +125,10 @@ The UI mirrors the pipeline: a step bar (Scan → Review → Apply → Done), ov
 cards (pairs, exclusions, live-photo cases, reclaimable space), a pair browser
 with side-by-side thumbnails and per-pair exclude toggles, an apply panel with a
 confirmation dialog, and an undo panel listing journals with a preview of what
-undo restores. One background job runs at a time, with live progress.
+undo restores. One background job runs at a time, with live progress. The
+connection (Immich URL, both emails, both API keys) is set in the browser on
+first run — or changed later via the "Connection" button in the header — and is
+persisted to your local `.env`.
 
 ### Running from another machine
 

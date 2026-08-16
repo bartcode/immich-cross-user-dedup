@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from immich_dedup.core.api import ImmichApiError, ImmichClient
 from immich_dedup.core.apply import ApplyOptions, apply_pairs
-from immich_dedup.core.config import load_config
+from immich_dedup.core.config import ConfigError, empty_config, load_config
 from immich_dedup.core.journal import Journal, undo_journal
 from immich_dedup.core.match import fuzzy_candidates, scan
 from immich_dedup.core.models import PRIMARY, SECONDARY, AssetInfo, LivePhotoCase, ScanResult
@@ -100,6 +100,31 @@ def create_app(
         if supplied != token:
             raise HTTPException(status_code=401, detail="invalid or missing token")
 
+    def require_configured() -> None:
+        if not session.is_configured():
+            raise HTTPException(
+                status_code=409, detail="not configured yet — set the connection first (POST /api/config)"
+            )
+
+    def config_payload() -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "configured": session.is_configured(),
+            "immich_url": session.config.immich_url,
+            "primary_email": session.config.primary_email,
+            "secondary_email": session.config.secondary_email,
+            "primary_key_set": bool(session.config.primary_api_key),
+            "secondary_key_set": bool(session.config.secondary_api_key),
+            "partners_bidirectional": False,
+            "checks": [],
+        }
+        if payload["configured"]:
+            report = session.ensure_preflight()
+            payload["partners_bidirectional"] = report.partners_bidirectional
+            payload["checks"] = [
+                {"name": check.name, "ok": check.ok, "detail": check.detail} for check in report.checks
+            ]
+        return payload
+
     def scan_or_404() -> ScanResult:
         if session.scan_result is None:
             raise HTTPException(status_code=409, detail="no scan result yet — run a scan first")
@@ -107,19 +132,29 @@ def create_app(
 
     @app.get("/api/config")
     def get_config(_: None = Depends(require_token)) -> dict[str, Any]:
-        report = session.ensure_preflight()
-        return {
-            "immich_url": session.config.immich_url,
-            "primary_email": session.config.primary_email,
-            "secondary_email": session.config.secondary_email,
-            "partners_bidirectional": report.partners_bidirectional,
-            "checks": [
-                {"name": check.name, "ok": check.ok, "detail": check.detail} for check in report.checks
-            ],
-        }
+        return config_payload()
+
+    @app.post("/api/config")
+    def set_config(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:
+        try:
+            session.reconfigure(
+                immich_url=str(body.get("immich_url", "")),
+                primary_email=str(body.get("primary_email", "")),
+                secondary_email=str(body.get("secondary_email", "")),
+                primary_api_key=str(body.get("primary_api_key", "")),
+                secondary_api_key=str(body.get("secondary_api_key", "")),
+                persist=bool(body.get("persist", True)),
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except JobBusyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return config_payload()
 
     @app.post("/api/scan")
     def start_scan(_: None = Depends(require_token)) -> dict[str, Any]:
+        require_configured()
+
         def run(progress) -> dict[str, Any]:
             report = run_preflight(session.client, session.config)
             with_session_preflight(report)
@@ -250,6 +285,7 @@ def create_app(
 
     @app.post("/api/undo")
     def start_undo(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:
+        require_configured()
         try:
             path = session.journal_path(body.get("name", ""))
         except ValueError as error:
@@ -353,13 +389,22 @@ def main() -> None:
     parser.add_argument("--env-file", default=None)
     args = parser.parse_args()
 
-    config = load_config(args.env_file)
+    try:
+        config = load_config(args.env_file)
+    except ConfigError:
+        config = empty_config()
+        print("No .env configuration found — open the UI to set the connection details in the browser.")
     client = ImmichClient(
         config.immich_url,
         config.primary_api_key,
         config.secondary_api_key,
     )
-    session = Session(config=config, client=client, reports_dir=config.reports_dir)
+    session = Session(
+        config=config,
+        client=client,
+        reports_dir=config.reports_dir,
+        env_file=Path(args.env_file) if args.env_file else Path(".env"),
+    )
     app = create_app(session, token=args.token)
     uvicorn.run(app, host=args.host, port=args.port)
 

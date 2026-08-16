@@ -9,8 +9,7 @@ setup: ## Install python deps, frontend deps, build frontend
 	uv sync
 	cd web && npm install && npm run build
 
-ui: ## Run the web UI against your instance (needs .env)
-	@test -f .env || { echo "No .env found — copy .env.example to .env and fill in your values first."; exit 1; }
+ui: ## Run the web UI (configure the connection in the browser)
 	uv run cross-user-dedup-ui $(ARGS)
 
 fake: ## Run the web UI against fake seeded data (no .env needed)

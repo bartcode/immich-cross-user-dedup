@@ -73,3 +73,38 @@ def load_config(
         primary_api_key=values["PRIMARY_API_KEY"],
         secondary_api_key=values["SECONDARY_API_KEY"],
     )
+
+
+def empty_config(reports_dir: Path = Path("reports")) -> DedupConfig:
+    """A configuration with no values — the web UI starts like this and gets
+    its connection details through POST /api/config."""
+    return DedupConfig(
+        immich_url="",
+        primary_email="",
+        secondary_email="",
+        primary_api_key="",
+        secondary_api_key="",
+        reports_dir=reports_dir,
+    )
+
+
+def save_env(path: Path, values: dict[str, str]) -> None:
+    """Update the given keys in a .env file, preserving unrelated lines.
+
+    Missing keys are appended; existing assignments are replaced in place."""
+    lines = path.read_text().splitlines() if path.exists() else []
+    result: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        stripped = line.strip()
+        is_assignment = stripped and not stripped.startswith("#") and "=" in stripped
+        key = stripped.split("=", 1)[0].strip() if is_assignment else None
+        if key in values:
+            result.append(f"{key}={values[key]}")
+            seen.add(key)
+        else:
+            result.append(line)
+    for key, value in values.items():
+        if key not in seen:
+            result.append(f"{key}={value}")
+    path.write_text("\n".join(result) + "\n")

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from immich_dedup.core.api import ImmichClient
-from immich_dedup.core.config import DedupConfig
+from immich_dedup.core.config import DedupConfig, save_env
 from immich_dedup.core.models import ScanResult
 from immich_dedup.core.preflight import PreflightReport, run_preflight
 
@@ -49,6 +49,7 @@ class Session:
     scan_result: ScanResult | None = None
     last_result: dict[str, Any] | None = None  # summary of the last finished job
     job: JobStatus = field(default_factory=JobStatus)
+    env_file: Path = field(default_factory=lambda: Path(".env"))
 
     def __post_init__(self) -> None:
         self._job_lock = threading.Lock()
@@ -89,6 +90,65 @@ class Session:
                 status.error = f"{type(error).__name__}: {error}"
 
     # -- helpers ------------------------------------------------------------
+
+    def is_configured(self) -> bool:
+        return all(
+            (
+                self.config.immich_url,
+                self.config.primary_email,
+                self.config.secondary_email,
+                self.config.primary_api_key,
+                self.config.secondary_api_key,
+            )
+        )
+
+    def reconfigure(
+        self,
+        *,
+        immich_url: str,
+        primary_email: str,
+        secondary_email: str,
+        primary_api_key: str = "",
+        secondary_api_key: str = "",
+        persist: bool = True,
+        client_factory: Callable[[DedupConfig], ImmichClient] | None = None,
+    ) -> DedupConfig:
+        """Swap the connection details, reset session state, and optionally
+        persist to the .env file. Blank API keys keep the current ones."""
+        if self.job.running:
+            raise JobBusyError("cannot change the connection while a job is running")
+
+        config = DedupConfig(
+            immich_url=immich_url.strip().rstrip("/"),
+            primary_email=primary_email.strip().lower(),
+            secondary_email=secondary_email.strip().lower(),
+            primary_api_key=primary_api_key.strip() or self.config.primary_api_key,
+            secondary_api_key=secondary_api_key.strip() or self.config.secondary_api_key,
+            reports_dir=self.reports_dir,
+        )
+        if not config.immich_url or not config.primary_email or not config.secondary_email:
+            raise ValueError("Immich URL and both email addresses are required")
+
+        factory = client_factory or (lambda c: ImmichClient(c.immich_url, c.primary_api_key, c.secondary_api_key))
+        new_client = factory(config)
+        previous = self.client
+        with self._state_lock:
+            self.config = config
+            self.client = new_client
+            self.preflight = None
+            self.scan_result = None
+            self.last_result = None
+        previous.close()
+
+        if persist:
+            save_env(self.env_file, {
+                "IMMICH_URL": config.immich_url,
+                "PRIMARY_EMAIL": config.primary_email,
+                "SECONDARY_EMAIL": config.secondary_email,
+                "PRIMARY_API_KEY": config.primary_api_key,
+                "SECONDARY_API_KEY": config.secondary_api_key,
+            })
+        return config
 
     def ensure_preflight(self) -> PreflightReport:
         if self.preflight is None:
