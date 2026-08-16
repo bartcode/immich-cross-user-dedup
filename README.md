@@ -234,10 +234,13 @@ connection (Immich URL, both emails, both API keys) is set in the browser on
 first run — or changed later via the "Connection" button in the header — and is
 persisted to your local `.env`.
 
-The last scan — **including your exclusions** — is persisted to
-`reports/dedup_scan.json` and reloaded automatically, so a browser refresh or
-even a backend restart won't lose your review progress (a stored scan is only
-restored when the configured users still match; re-scan to refresh it).
+The last scan is persisted to `reports/dedup_scan.json` and reloaded
+automatically, so a browser refresh or even a backend restart won't lose your
+review progress (a stored scan is only restored when the configured users still
+match). After an apply or undo the library has changed, so the scan state is
+**cleared** — re-scan to see what remains. Your exclusions live in
+`reports/dedup_exclusions.json` and are re-applied to every new scan, so pairs
+you deliberately kept stay excluded across scans and applies.
 
 ### Running from another machine
 

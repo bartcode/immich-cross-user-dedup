@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from collections.abc import Callable
@@ -98,6 +99,35 @@ class Session:
                 save_scan(self.scan_path, self.scan_result, immich_url=self.config.immich_url)
             except OSError as error:  # persistence is best-effort
                 print(f"warning: could not persist scan results: {error}")
+
+    def clear_scan(self) -> None:
+        """Drop the scan state after the library changed (apply/undo) — the
+        snapshot is stale by then and would show already-trashed duplicates."""
+        with self._state_lock:
+            self.scan_result = None
+        try:
+            self.scan_path.unlink(missing_ok=True)
+        except OSError as error:
+            print(f"warning: could not remove persisted scan: {error}")
+
+    # -- exclusion persistence --------------------------------------------------
+
+    @property
+    def exclusions_path(self) -> Path:
+        return self.reports_dir / "dedup_exclusions.json"
+
+    def save_exclusions(self, checksums: set[str]) -> None:
+        try:
+            self.reports_dir.mkdir(parents=True, exist_ok=True)
+            self.exclusions_path.write_text(json.dumps(sorted(checksums), indent=0))
+        except OSError as error:  # best-effort
+            print(f"warning: could not persist exclusions: {error}")
+
+    def load_exclusions(self) -> set[str]:
+        try:
+            return set(json.loads(self.exclusions_path.read_text()))
+        except (OSError, json.JSONDecodeError):
+            return set()
 
     # -- job runner ---------------------------------------------------------
 

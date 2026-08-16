@@ -210,6 +210,11 @@ def create_app(
             result = scan(
                 session.client, report.primary, report.secondaries, users=report.users, progress=progress
             )
+            # re-apply exclusions the user made in earlier scans (same photos,
+            # same checksums) and keep only those still present
+            checksums = {group.checksum for group in result.groups}
+            result.excluded |= session.load_exclusions() & checksums
+            session.save_exclusions(result.excluded)
             csv_path = write_csv(
                 result, session.reports_dir / "dedup_report.csv", session.config.immich_url
             )
@@ -321,9 +326,18 @@ def create_app(
             journal = Journal(session.new_journal_path())
             try:
                 outcome = apply_groups(session.client, result, options, journal, progress=progress)
+                summary = outcome.summary()
             finally:
                 journal.close()
-            return {"summary": outcome.summary(), "journal": journal.path.name}
+                # the library changed — the snapshot is stale, so clear it and
+                # keep only the user's exclusions for the next scan
+                session.save_exclusions(result.excluded)
+                session.clear_scan()
+            return {
+                "summary": summary,
+                "journal": journal.path.name,
+                "note": "scan state cleared — re-scan to see what remains",
+            }
 
         try:
             return session.run_job("apply", run)
@@ -440,15 +454,20 @@ def create_app(
         def run(progress) -> dict[str, Any]:
             journal = Journal(path)
             users = session.ensure_preflight().users
-            outcome = undo_journal(session.client, journal, users, progress=progress)
-            return {
-                "restored_assets": outcome.restored_assets,
-                "unrestorable": outcome.unrestorable,
-                "album_rows_removed": outcome.album_rows_removed,
-                "album_rows_kept": outcome.album_rows_kept,
-                "metadata_restored": outcome.metadata_restored,
-                "errors": outcome.errors,
-            }
+            try:
+                outcome = undo_journal(session.client, journal, users, progress=progress)
+                result_payload = {
+                    "restored_assets": outcome.restored_assets,
+                    "unrestorable": outcome.unrestorable,
+                    "album_rows_removed": outcome.album_rows_removed,
+                    "album_rows_kept": outcome.album_rows_kept,
+                    "metadata_restored": outcome.metadata_restored,
+                    "errors": outcome.errors,
+                }
+            finally:
+                # the library changed — the scan snapshot no longer matches it
+                session.clear_scan()
+            return result_payload
 
         try:
             return session.run_job("undo", run)

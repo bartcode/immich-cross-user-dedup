@@ -101,3 +101,94 @@ def test_scan_round_trip_preserves_everything(tmp_path):
     assert group.motion_ids[s_still] == [s_motion]
     assert loaded.excluded == {"sum-1"}
     assert s_motion in loaded.motion_ids
+
+
+def test_scan_state_cleared_after_apply_and_exclusions_survive(tmp_path):
+    world = World()
+    fake = world.fake
+    fake.add_asset(world.p_id, "keep-me", file_name="keep.jpg")
+    fake.add_asset(world.s_id, "keep-me", file_name="keep.jpg")
+    fake.add_asset(world.p_id, "dedupe-me", file_name="dupe.jpg")
+    fake.add_asset(world.s_id, "dedupe-me", file_name="dupe.jpg")
+
+    api, _ = build(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+    api.post("/api/pairs/keep-me/exclude")
+
+    api.post("/api/apply", json={})
+    wait_for_job(api)
+
+    # scan state is gone — UI asks for a fresh scan
+    assert api.get("/api/stats").status_code == 409
+    assert api.get("/api/pairs").status_code == 409
+    assert not (tmp_path / "dedup_scan.json").exists()
+    # ...but the exclusion was kept for the next scan
+    assert (tmp_path / "dedup_exclusions.json").exists()
+
+    # re-scan: the applied pair is gone, the excluded one is still excluded
+    api.post("/api/scan")
+    wait_for_job(api)
+    pairs = api.get("/api/pairs?filter=all").json()
+    assert [group["checksum"] for group in pairs["items"]] == ["keep-me"]
+    assert pairs["items"][0]["excluded"] is True
+
+
+def test_scan_state_cleared_after_undo(tmp_path):
+    world = World()
+    fake = world.fake
+    fake.add_asset(world.p_id, "sum-1")
+    fake.add_asset(world.s_id, "sum-1")
+    api, _ = build(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+    api.post("/api/apply", json={})
+    wait_for_job(api)
+
+    api.post("/api/scan")  # scan again so we have state to clear
+    wait_for_job(api)
+    name = api.get("/api/journals").json()[0]["name"]
+    api.post("/api/undo", json={"name": name})
+    wait_for_job(api)
+
+    assert api.get("/api/stats").status_code == 409
+    assert not (tmp_path / "dedup_scan.json").exists()
+
+
+def test_scan_state_cleared_after_cancelled_apply(tmp_path):
+    import time
+
+    world = World()
+    fake = world.fake
+    for i in range(3):
+        fake.add_asset(world.p_id, f"sum-{i}")
+        fake.add_asset(world.s_id, f"sum-{i}")
+    api, session = build(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+    assert (tmp_path / "dedup_scan.json").exists()
+
+    # a job that gets cancelled mid-flight still invalidates the scan
+    from immich_dedup.core.apply import ApplyOptions, apply_groups
+    from immich_dedup.core.journal import Journal
+
+    def slow_apply(progress):
+        result = session.scan_result
+        journal = Journal(tmp_path / "cancel.jsonl")
+        try:
+            # wrap progress to slow it down so we can cancel mid-run
+            def slow(stage, current, total):
+                time.sleep(0.05)
+                progress(stage, current, total)
+
+            return apply_groups(session.client, result, ApplyOptions(), journal, progress=slow)
+        finally:
+            journal.close()
+            session.clear_scan()
+
+    session.run_job("apply", slow_apply)
+    time.sleep(0.1)
+    api.post("/api/job/cancel")
+    wait_for_job(api)
+    assert api.get("/api/job").json()["job"]["cancelled"] is True
+    assert api.get("/api/stats").status_code == 409

@@ -364,11 +364,16 @@ export default function App() {
             {lastResult.cancelled ? (
               <>{String(lastResult.note ?? "")}</>
             ) : (
-              <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
-                {typeof lastResult.summary === "string"
-                  ? lastResult.summary
-                  : JSON.stringify(lastResult, null, 2)}
-              </pre>
+              <>
+                <pre className="overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                  {typeof lastResult.summary === "string"
+                    ? lastResult.summary
+                    : JSON.stringify(lastResult, null, 2)}
+                </pre>
+                {typeof lastResult.note === "string" && lastResult.note && (
+                  <p className="mt-1 font-sans text-xs">{lastResult.note}</p>
+                )}
+              </>
             )}
           </AlertDescription>
         </Alert>
