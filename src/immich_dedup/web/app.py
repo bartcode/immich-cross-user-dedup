@@ -214,6 +214,7 @@ def create_app(
                 result, session.reports_dir / "dedup_report.csv", session.config.immich_url
             )
             session.scan_result = result
+            session.persist_scan()  # survive restarts (includes exclusions)
             return {"group_count": result.stats.group_count, "report_csv": str(csv_path)}
 
         try:
@@ -295,12 +296,14 @@ def create_app(
         if not any(g.checksum == checksum for g in result.groups):
             raise HTTPException(status_code=404, detail="unknown checksum")
         result.excluded.add(checksum)
+        session.persist_scan()
         return {"checksum": checksum, "excluded": True}
 
     @app.post("/api/pairs/{checksum}/include")
     def include_pair(checksum: str, _: None = Depends(require_token)) -> dict[str, Any]:
         result = scan_or_404()
         result.excluded.discard(checksum)
+        session.persist_scan()
         return {"checksum": checksum, "excluded": False}
 
     @app.post("/api/apply")

@@ -14,6 +14,7 @@ from immich_dedup.core.api import ImmichClient
 from immich_dedup.core.config import DedupConfig, SecondaryCredentials, empty_config, save_env, secondary_env_values
 from immich_dedup.core.models import ScanResult
 from immich_dedup.core.preflight import PreflightReport, run_preflight
+from immich_dedup.core.serialize import load_scan, save_scan
 
 
 @dataclass
@@ -71,6 +72,32 @@ class Session:
         self._job_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._cancel = threading.Event()
+        self._restore_scan()
+
+    # -- scan persistence ----------------------------------------------------
+
+    @property
+    def scan_path(self) -> Path:
+        return self.reports_dir / "dedup_scan.json"
+
+    def _restore_scan(self) -> None:
+        """Reload the last persisted scan when it belongs to the same users."""
+        if self.scan_result is not None or not self.is_configured():
+            return
+        stored = load_scan(self.scan_path)
+        if stored is None:
+            return
+        same_primary = stored.primary.email == self.config.primary_email
+        same_secondaries = {user.email for user in stored.secondaries} == set(self.config.secondary_emails)
+        if same_primary and same_secondaries:
+            self.scan_result = stored
+
+    def persist_scan(self) -> None:
+        if self.scan_result is not None:
+            try:
+                save_scan(self.scan_path, self.scan_result, immich_url=self.config.immich_url)
+            except OSError as error:  # persistence is best-effort
+                print(f"warning: could not persist scan results: {error}")
 
     # -- job runner ---------------------------------------------------------
 
@@ -195,6 +222,8 @@ class Session:
             self.scan_result = None
             self.last_result = None
         previous.close()
+        # a stored scan belonging to the new connection's users is restored
+        self._restore_scan()
 
         if persist:
             save_env(

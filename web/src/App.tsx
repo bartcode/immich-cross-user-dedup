@@ -72,6 +72,15 @@ export default function App() {
 
   useEffect(() => {
     api.config().then(setConfig).catch((cause) => setConfigError(String(cause)))
+    // restore stats / last result after a page refresh (the backend keeps the scan)
+    api
+      .job()
+      .then((payload) => {
+        setJob(payload.job)
+        setStats(payload.stats)
+        setLastResult(payload.last_result)
+      })
+      .catch(() => undefined)
   }, [])
 
   useEffect(loadPairs, [loadPairs, refreshKey])

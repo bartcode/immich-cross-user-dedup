@@ -234,6 +234,11 @@ connection (Immich URL, both emails, both API keys) is set in the browser on
 first run — or changed later via the "Connection" button in the header — and is
 persisted to your local `.env`.
 
+The last scan — **including your exclusions** — is persisted to
+`reports/dedup_scan.json` and reloaded automatically, so a browser refresh or
+even a backend restart won't lose your review progress (a stored scan is only
+restored when the configured users still match; re-scan to refresh it).
+
 ### Running from another machine
 
 The tool talks only to the public Immich API, so it runs from any machine that
