@@ -1,12 +1,12 @@
-"""Pre-flight checks: validate keys, resolve users, verify partner sharing."""
+"""Pre-flight checks: validate keys, resolve users, verify the partner star."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from immich_dedup.core.api import ImmichAuthError, ImmichClient
 from immich_dedup.core.config import DedupConfig
-from immich_dedup.core.models import PRIMARY, SECONDARY, User
+from immich_dedup.core.models import User
 
 
 @dataclass
@@ -20,8 +20,11 @@ class Check:
 class PreflightReport:
     checks: list[Check]
     primary: User | None = None
-    secondary: User | None = None
-    partners_bidirectional: bool = False
+    secondaries: list[User] = field(default_factory=list)
+    # user_id -> User registry for every successfully validated user
+    users: dict[str, User] = field(default_factory=dict)
+    # secondary email -> partner sharing with primary is bidirectional
+    partner_status: dict[str, bool] = field(default_factory=dict)
 
     @property
     def failed(self) -> bool:
@@ -32,66 +35,81 @@ def run_preflight(client: ImmichClient, config: DedupConfig) -> PreflightReport:
     checks: list[Check] = []
     report = PreflightReport(checks=checks)
 
-    users: dict[str, User] = {}
-    for role, email in ((PRIMARY, config.primary_email), (SECONDARY, config.secondary_email)):
+    def resolve(label: str, handle: str, expected_email: str) -> User | None:
         try:
-            me = client.get_me(role)
+            me = client.get_me(handle)
         except ImmichAuthError as error:
-            checks.append(Check(f"{role} API key", False, str(error)))
-            continue
+            checks.append(Check(f"{label} API key", False, str(error)))
+            return None
         actual_email = me.get("email", "").strip().lower()
-        if actual_email != email:
+        if actual_email != expected_email:
             checks.append(
                 Check(
-                    f"{role} key matches {email}",
+                    f"{label} key matches {expected_email}",
                     False,
-                    f"the {role} API key belongs to {actual_email!r} — check that PRIMARY_/SECONDARY_API_KEY "
-                    "are not swapped",
+                    f"the {label} API key belongs to {actual_email!r} — check that the keys are not "
+                    "swapped or misassigned",
+                )
+            )
+            return None
+        user = User(id=me["id"], email=actual_email, name=me.get("name", ""))
+        checks.append(Check(f"{label} API key", True, f"valid for {actual_email} ({user.id})"))
+        return user
+
+    primary = resolve("primary", config.primary_email, config.primary_email)
+    if primary is not None:
+        report.primary = primary
+        report.users[primary.id] = primary
+
+    for creds in config.secondaries:
+        secondary = resolve(f"secondary {creds.email}", creds.email, creds.email)
+        if secondary is None:
+            continue
+        if secondary.id in report.users:
+            checks.append(
+                Check(
+                    f"secondary {creds.email} distinct", False, "this key belongs to an already-listed user"
                 )
             )
             continue
-        users[role] = User(role=role, id=me["id"], email=actual_email, name=me.get("name", ""))
-        checks.append(Check(f"{role} API key", True, f"valid for {actual_email} ({users[role].id})"))
+        checks.append(Check(f"secondary {creds.email} distinct", True, "a separate user account"))
+        report.secondaries.append(secondary)
+        report.users[secondary.id] = secondary
 
-    if PRIMARY in users and SECONDARY in users:
-        if users[PRIMARY].id == users[SECONDARY].id:
-            checks.append(Check("distinct users", False, "both API keys belong to the same user"))
-        else:
-            checks.append(Check("distinct users", True, "primary and secondary are different users"))
-            report.primary = users[PRIMARY]
-            report.secondary = users[SECONDARY]
-
-    if len(users) == 2:
-        shared_by = {p["id"] for p in client.get_partners(PRIMARY).get("shared-by", [])}
-        shared_with = {p["id"] for p in client.get_partners(PRIMARY).get("shared-with", [])}
-        s = users[SECONDARY].id
-        # primary's "shared-by" lists users primary shares with; its "shared-with"
-        # lists users that share with primary — secondary must appear in both.
-        primary_shares = s in shared_by
-        secondary_shares = s in shared_with
-        report.partners_bidirectional = primary_shares and secondary_shares
-        if report.partners_bidirectional:
-            checks.append(
-                Check(
-                    "partner sharing",
-                    True,
-                    "enabled in both directions — cross-user album transfers are permitted",
+    if report.primary is not None and report.secondaries:
+        partners = client.get_partners(report.primary.email)
+        shared_by = {p["id"] for p in partners.get("shared-by", [])}
+        shared_with = {p["id"] for p in partners.get("shared-with", [])}
+        for secondary in report.secondaries:
+            # primary's "shared-by" lists users primary shares with; its
+            # "shared-with" lists users that share with primary — each secondary
+            # must appear in both.
+            primary_shares = secondary.id in shared_by
+            secondary_shares = secondary.id in shared_with
+            ok = primary_shares and secondary_shares
+            report.partner_status[secondary.email] = ok
+            if ok:
+                checks.append(
+                    Check(
+                        f"partner sharing with {secondary.email}",
+                        True,
+                        "bidirectional — cross-user album transfers are permitted",
+                    )
                 )
-            )
-        else:
-            missing = []
-            if not primary_shares:
-                missing.append(f"{users[PRIMARY].email} does not share with {users[SECONDARY].email}")
-            if not secondary_shares:
-                missing.append(f"{users[SECONDARY].email} does not share with {users[PRIMARY].email}")
-            checks.append(
-                Check(
-                    "partner sharing",
-                    False,
-                    "; ".join(missing)
-                    + ". Album membership transfer across users requires partner sharing in both "
-                    "directions (Immich > Account Settings > Partner Sharing).",
+            else:
+                missing = []
+                if not primary_shares:
+                    missing.append(f"{report.primary.email} does not share with {secondary.email}")
+                if not secondary_shares:
+                    missing.append(f"{secondary.email} does not share with {report.primary.email}")
+                checks.append(
+                    Check(
+                        f"partner sharing with {secondary.email}",
+                        False,
+                        "; ".join(missing)
+                        + ". Album membership transfer across users requires partner sharing in both "
+                        "directions (Immich > Account Settings > Partner Sharing).",
+                    )
                 )
-            )
 
     return report

@@ -6,6 +6,9 @@ Modes:
   cross-user-dedup --fuzzy         # additionally list byte-different near-duplicates
   cross-user-dedup --undo FILE     # reverse-replay a journal
   cross-user-dedup-ui              # web UI (separate entry point)
+
+Users: one primary (keeps the copies) plus any number of secondaries, given as
+repeatable `--secondary EMAIL KEY` flags or via .env (see .env.example).
 """
 
 from __future__ import annotations
@@ -16,10 +19,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from immich_dedup.core.api import ImmichClient
-from immich_dedup.core.apply import MOTION_SKIP, MOTION_TRASH, ApplyOptions, apply_pairs
+from immich_dedup.core.apply import MOTION_SKIP, MOTION_TRASH, ApplyOptions, apply_groups
 from immich_dedup.core.config import load_config
 from immich_dedup.core.journal import Journal, undo_journal
-from immich_dedup.core.match import _user_assets, fuzzy_candidates, scan
+from immich_dedup.core.match import fuzzy_candidates, scan, user_assets
 from immich_dedup.core.preflight import run_preflight
 from immich_dedup.core.report import summary_text, write_csv, write_fuzzy_csv
 
@@ -36,26 +39,30 @@ def _done_line() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cross-user-dedup",
-        description="Remove duplicate media shared by two Immich users (via the public API).",
+        description="Remove duplicate media shared across Immich users (via the public API).",
     )
     parser.add_argument("--env-file", default=None, help="path to a .env file (default: ./.env if present)")
     parser.add_argument("--immich-url", default=None)
     parser.add_argument("--primary-email", default=None)
-    parser.add_argument("--secondary-email", default=None)
     parser.add_argument("--primary-api-key", default=None)
-    parser.add_argument("--secondary-api-key", default=None)
     parser.add_argument(
-        "--reports-dir",
-        default=None,
-        help="directory for reports and journals (default: reports/)",
+        "--secondary",
+        nargs=2,
+        metavar=("EMAIL", "KEY"),
+        action="append",
+        default=[],
+        help="secondary user (repeatable): their email and API key",
     )
+    parser.add_argument("--secondary-email", default=None, help="legacy single-secondary email")
+    parser.add_argument("--secondary-api-key", default=None, help="legacy single-secondary API key")
+    parser.add_argument("--reports-dir", default=None, help="directory for reports and journals (default: reports/)")
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="apply the dedup (album transfer + trash losers)")
     mode.add_argument("--undo", metavar="JOURNAL", help="reverse-replay a journal file")
 
     parser.add_argument("--fuzzy", action="store_true", help="also report byte-different near-duplicates")
-    parser.add_argument("--limit", type=int, default=None, help="apply to at most N pairs")
+    parser.add_argument("--limit", type=int, default=None, help="apply to at most N groups")
     parser.add_argument(
         "--merge-metadata",
         action="store_true",
@@ -70,6 +77,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _secondary_overrides(args) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = [tuple(pair) for pair in args.secondary]
+    if args.secondary_email or args.secondary_api_key:
+        if not (args.secondary_email and args.secondary_api_key):
+            raise SystemExit("--secondary-email and --secondary-api-key must be used together")
+        pairs.append((args.secondary_email, args.secondary_api_key))
+    return pairs
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -79,10 +95,9 @@ def main(argv: list[str] | None = None) -> int:
             overrides={
                 "IMMICH_URL": args.immich_url,
                 "PRIMARY_EMAIL": args.primary_email,
-                "SECONDARY_EMAIL": args.secondary_email,
                 "PRIMARY_API_KEY": args.primary_api_key,
-                "SECONDARY_API_KEY": args.secondary_api_key,
             },
+            secondary_overrides=_secondary_overrides(args),
         )
     except Exception as error:
         print(f"error: {error}", file=sys.stderr)
@@ -97,7 +112,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _make_client(config):
-    return ImmichClient(config.immich_url, config.primary_api_key, config.secondary_api_key)
+    keys = {config.primary_email: config.primary_api_key}
+    keys.update({secondary.email: secondary.api_key for secondary in config.secondaries})
+    return ImmichClient(config.immich_url, keys)
 
 
 def _undo(journal_path: Path, config) -> int:
@@ -110,7 +127,7 @@ def _undo(journal_path: Path, config) -> int:
             _print_preflight(report)
             return 1
         print(f"Undoing journal {journal_path} ...")
-        outcome = undo_journal(client, Journal(journal_path), progress=_progress)
+        outcome = undo_journal(client, Journal(journal_path), report.users, progress=_progress)
         _done_line()
         print(
             f"  restored assets:     {outcome.restored_assets}\n"
@@ -135,7 +152,7 @@ def _scan_and_maybe_apply(config, args) -> int:
             return 1
 
         print("\nScanning libraries ...")
-        result = scan(client, report.primary, report.secondary, progress=_progress)
+        result = scan(client, report.primary, report.secondaries, users=report.users, progress=_progress)
         _done_line()
 
         csv_path = write_csv(result, config.reports_dir / "dedup_report.csv", config.immich_url)
@@ -143,9 +160,10 @@ def _scan_and_maybe_apply(config, args) -> int:
         print(f"\nReport written to {csv_path}")
 
         if args.fuzzy:
-            fuzzy = fuzzy_candidates(
-                _user_assets(client, result.primary, None), _user_assets(client, result.secondary, None)
-            )
+            all_secondary_assets = [
+                asset for secondary in result.secondaries for asset in user_assets(client, secondary)
+            ]
+            fuzzy = fuzzy_candidates(user_assets(client, result.primary), all_secondary_assets)
             fuzzy_path = write_fuzzy_csv(fuzzy, config.reports_dir / "dedup_fuzzy.csv", config.immich_url)
             print(f"Fuzzy near-duplicates: {len(fuzzy)} (report only) -> {fuzzy_path}")
 
@@ -153,7 +171,7 @@ def _scan_and_maybe_apply(config, args) -> int:
             print("\nDry run only. Re-run with --apply to transfer albums and trash the losers.")
             return 0
 
-        if result.stats.pair_count == 0:
+        if result.stats.group_count == 0:
             return 0
 
         options = ApplyOptions(
@@ -164,7 +182,7 @@ def _scan_and_maybe_apply(config, args) -> int:
         journal = Journal(config.reports_dir / f"dedup_apply_{_timestamp()}.jsonl")
         print("\nApplying ...")
         try:
-            outcome = apply_pairs(client, result, options, journal, progress=_progress)
+            outcome = apply_groups(client, result, options, journal, progress=_progress)
         finally:
             journal.close()
         _done_line()

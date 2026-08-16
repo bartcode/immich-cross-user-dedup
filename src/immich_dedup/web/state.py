@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from immich_dedup.core.api import ImmichClient
-from immich_dedup.core.config import DedupConfig, save_env
+from immich_dedup.core.config import DedupConfig, SecondaryCredentials, empty_config, save_env, secondary_env_values
 from immich_dedup.core.models import ScanResult
 from immich_dedup.core.preflight import PreflightReport, run_preflight
 
@@ -38,6 +38,16 @@ class JobStatus:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
+
+
+def _client_keys(config: DedupConfig) -> dict[str, str]:
+    keys = {config.primary_email: config.primary_api_key}
+    keys.update({secondary.email: secondary.api_key for secondary in config.secondaries})
+    return keys
+
+
+def build_client(config: DedupConfig, transport=None) -> ImmichClient:
+    return ImmichClient(config.immich_url, _client_keys(config), transport=transport)
 
 
 @dataclass
@@ -92,13 +102,13 @@ class Session:
     # -- helpers ------------------------------------------------------------
 
     def is_configured(self) -> bool:
-        return all(
-            (
-                self.config.immich_url,
-                self.config.primary_email,
-                self.config.secondary_email,
-                self.config.primary_api_key,
-                self.config.secondary_api_key,
+        return (
+            bool(self.config.immich_url)
+            and bool(self.config.primary_email)
+            and bool(self.config.primary_api_key)
+            and bool(self.config.secondaries)
+            and all(
+                secondary.email and secondary.api_key for secondary in self.config.secondaries
             )
         )
 
@@ -107,29 +117,46 @@ class Session:
         *,
         immich_url: str,
         primary_email: str,
-        secondary_email: str,
         primary_api_key: str = "",
-        secondary_api_key: str = "",
+        secondaries: list[dict[str, str]] | None = None,
         persist: bool = True,
         client_factory: Callable[[DedupConfig], ImmichClient] | None = None,
     ) -> DedupConfig:
         """Swap the connection details, reset session state, and optionally
-        persist to the .env file. Blank API keys keep the current ones."""
+        persist to the .env file. Blank API keys keep the current ones (matched
+        by email for secondaries)."""
         if self.job.running:
             raise JobBusyError("cannot change the connection while a job is running")
 
+        email = primary_email.strip().lower()
+        if not immich_url.strip() or not email:
+            raise ValueError("Immich URL and the primary email are required")
+
+        kept = {secondary.email: secondary for secondary in self.config.secondaries}
+        resolved: list[SecondaryCredentials] = []
+        for entry in secondaries or []:
+            entry_email = entry.get("email", "").strip().lower()
+            entry_key = entry.get("api_key", "").strip()
+            if not entry_email:
+                raise ValueError("secondary users need an email")
+            api_key = entry_key or (kept[entry_email].api_key if entry_email in kept else "")
+            if not api_key:
+                raise ValueError(f"no API key given for secondary {entry_email!r} (and none stored)")
+            resolved.append(SecondaryCredentials(email=entry_email, api_key=api_key))
+        if not resolved:
+            raise ValueError("at least one secondary user is required")
+        if email in {secondary.email for secondary in resolved}:
+            raise ValueError("the primary user must not also be listed as a secondary user")
+
         config = DedupConfig(
             immich_url=immich_url.strip().rstrip("/"),
-            primary_email=primary_email.strip().lower(),
-            secondary_email=secondary_email.strip().lower(),
+            primary_email=email,
             primary_api_key=primary_api_key.strip() or self.config.primary_api_key,
-            secondary_api_key=secondary_api_key.strip() or self.config.secondary_api_key,
+            secondaries=tuple(resolved),
             reports_dir=self.reports_dir,
         )
-        if not config.immich_url or not config.primary_email or not config.secondary_email:
-            raise ValueError("Immich URL and both email addresses are required")
 
-        factory = client_factory or (lambda c: ImmichClient(c.immich_url, c.primary_api_key, c.secondary_api_key))
+        factory = client_factory or build_client
         new_client = factory(config)
         previous = self.client
         with self._state_lock:
@@ -141,13 +168,15 @@ class Session:
         previous.close()
 
         if persist:
-            save_env(self.env_file, {
-                "IMMICH_URL": config.immich_url,
-                "PRIMARY_EMAIL": config.primary_email,
-                "SECONDARY_EMAIL": config.secondary_email,
-                "PRIMARY_API_KEY": config.primary_api_key,
-                "SECONDARY_API_KEY": config.secondary_api_key,
-            })
+            save_env(
+                self.env_file,
+                {
+                    "IMMICH_URL": config.immich_url,
+                    "PRIMARY_EMAIL": config.primary_email,
+                    "PRIMARY_API_KEY": config.primary_api_key,
+                    **secondary_env_values(config.secondaries),
+                },
+            )
         return config
 
     def ensure_preflight(self) -> PreflightReport:
@@ -187,3 +216,16 @@ class JobBusyError(Exception):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def unconfigured_session(reports_dir: Path, env_file: Path | None = None) -> Session:
+    """A session with no values — the web UI starts like this and gets its
+    connection details through POST /api/config."""
+    config = empty_config(reports_dir=reports_dir)
+    client = ImmichClient("", {"unconfigured": "none"})
+    return Session(
+        config=config,
+        client=client,
+        reports_dir=reports_dir,
+        env_file=env_file or Path(".env"),
+    )

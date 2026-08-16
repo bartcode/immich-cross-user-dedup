@@ -1,7 +1,7 @@
 """FastAPI backend for the review UI.
 
 JSON API under /api; the built frontend (web/dist) is served at / when present.
-Run with: cross-user-dedup ui [--host 127.0.0.1] [--port 8642] [--token SECRET]
+Run with: cross-user-dedup-ui [--host 127.0.0.1] [--port 8642] [--token SECRET]
 """
 
 from __future__ import annotations
@@ -14,15 +14,15 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from immich_dedup.core.api import ImmichApiError, ImmichClient
-from immich_dedup.core.apply import ApplyOptions, apply_pairs
-from immich_dedup.core.config import ConfigError, empty_config, load_config
+from immich_dedup.core.api import ImmichApiError
+from immich_dedup.core.apply import ApplyOptions, apply_groups
+from immich_dedup.core.config import ConfigError, load_config
 from immich_dedup.core.journal import Journal, undo_journal
-from immich_dedup.core.match import fuzzy_candidates, scan
-from immich_dedup.core.models import PRIMARY, SECONDARY, AssetInfo, LivePhotoCase, ScanResult
+from immich_dedup.core.match import fuzzy_candidates, scan, user_assets
+from immich_dedup.core.models import AssetInfo, LivePhotoCase, ScanResult
 from immich_dedup.core.preflight import run_preflight
 from immich_dedup.core.report import asset_url, write_csv, write_fuzzy_csv
-from immich_dedup.web.state import JobBusyError, Session
+from immich_dedup.web.state import JobBusyError, Session, build_client, unconfigured_session
 
 WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 
@@ -33,7 +33,7 @@ WEB_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 def asset_dto(asset: AssetInfo, base_url: str, *, with_albums: bool = False) -> dict[str, Any]:
     data = {
         "id": asset.id,
-        "owner_role": asset.owner_role,
+        "owner_email": asset.owner_email,
         "type": asset.type,
         "file_name": asset.original_file_name,
         "taken_at": asset.file_created_at.isoformat() if asset.file_created_at else None,
@@ -46,19 +46,30 @@ def asset_dto(asset: AssetInfo, base_url: str, *, with_albums: bool = False) -> 
     }
     if with_albums:
         data["albums"] = [
-            {"id": album.id, "name": album.name, "owner_role": album.owner_id} for album in asset.albums
+            {
+                "id": album.id,
+                "name": album.name,
+                "owner_email": "",
+            }
+            for album in asset.albums
         ]
     return data
 
 
-def pair_dto(result: ScanResult, pair, base_url: str) -> dict[str, Any]:
+def group_dto(result: ScanResult, group, base_url: str) -> dict[str, Any]:
     return {
-        "checksum": pair.checksum,
-        "excluded": pair.checksum in result.excluded,
-        "live_photo": pair.live_photo,
-        "keeper": asset_dto(pair.keeper, base_url),
-        "loser": asset_dto(pair.loser, base_url, with_albums=True),
-        "reclaimable_bytes": pair.reclaimable_bytes,
+        "checksum": group.checksum,
+        "excluded": group.checksum in result.excluded,
+        "keeper": asset_dto(group.keeper, base_url),
+        "losers": [
+            {
+                **asset_dto(loser, base_url, with_albums=True),
+                "live_photo": group.live_photo.get(loser.id, LivePhotoCase.ALIGNED),
+                "reclaimable_bytes": group.loser_reclaimable.get(loser.id, loser.file_size_bytes),
+            }
+            for loser in group.losers
+        ],
+        "reclaimable_bytes": group.reclaimable_bytes,
     }
 
 
@@ -66,18 +77,28 @@ def stats_dto(result: ScanResult) -> dict[str, Any]:
     stats = result.stats
     return {
         "primary_email": result.primary.email,
-        "secondary_email": result.secondary.email,
+        "secondary_emails": [secondary.email for secondary in result.secondaries],
         "primary_assets": stats.primary_assets,
-        "secondary_assets": stats.secondary_assets,
-        "pair_count": stats.pair_count,
+        "group_count": stats.group_count,
+        "skipped_no_primary": stats.skipped_no_primary,
         "excluded_count": len(result.excluded),
-        "eligible_count": len(result.eligible_pairs()),
+        "eligible_count": len(result.eligible_groups()),
         "reclaimable_assets": stats.reclaimable_assets,
         "reclaimable_bytes": stats.reclaimable_bytes,
         "affected_albums": stats.affected_albums,
         "live_photo_aligned": stats.live_photo_aligned,
         "live_photo_keeper_lacks_motion": stats.live_photo_keeper_lacks_motion,
         "live_photo_loser_lacks_motion": stats.live_photo_loser_lacks_motion,
+        "per_user": [
+            {
+                "email": secondary.email,
+                "assets": stats.per_user[secondary.email].assets,
+                "trashed_files": stats.per_user[secondary.email].trashed_files,
+                "trashed_bytes": stats.per_user[secondary.email].trashed_bytes,
+            }
+            for secondary in result.secondaries
+            if secondary.email in stats.per_user
+        ],
     }
 
 
@@ -107,19 +128,34 @@ def create_app(
             )
 
     def config_payload() -> dict[str, Any]:
+        configured = session.is_configured()
         payload: dict[str, Any] = {
-            "configured": session.is_configured(),
+            "configured": configured,
             "immich_url": session.config.immich_url,
             "primary_email": session.config.primary_email,
-            "secondary_email": session.config.secondary_email,
             "primary_key_set": bool(session.config.primary_api_key),
-            "secondary_key_set": bool(session.config.secondary_api_key),
-            "partners_bidirectional": False,
+            "secondaries": [
+                {
+                    "email": secondary.email,
+                    "key_set": bool(secondary.api_key),
+                    "partner_ok": False,
+                }
+                for secondary in session.config.secondaries
+            ],
+            "partners_ok": False,
             "checks": [],
         }
-        if payload["configured"]:
+        if configured:
             report = session.ensure_preflight()
-            payload["partners_bidirectional"] = report.partners_bidirectional
+            payload["partners_ok"] = all(report.partner_status.values()) and bool(report.partner_status)
+            payload["secondaries"] = [
+                {
+                    "email": secondary.email,
+                    "key_set": True,
+                    "partner_ok": report.partner_status.get(secondary.email, False),
+                }
+                for secondary in session.config.secondaries
+            ]
             payload["checks"] = [
                 {"name": check.name, "ok": check.ok, "detail": check.detail} for check in report.checks
             ]
@@ -136,16 +172,20 @@ def create_app(
 
     @app.post("/api/config")
     def set_config(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:
+        secondaries = [
+            {"email": str(entry.get("email", "")), "api_key": str(entry.get("api_key", ""))}
+            for entry in body.get("secondaries", [])
+            if isinstance(entry, dict)
+        ]
         try:
             session.reconfigure(
                 immich_url=str(body.get("immich_url", "")),
                 primary_email=str(body.get("primary_email", "")),
-                secondary_email=str(body.get("secondary_email", "")),
                 primary_api_key=str(body.get("primary_api_key", "")),
-                secondary_api_key=str(body.get("secondary_api_key", "")),
+                secondaries=secondaries,
                 persist=bool(body.get("persist", True)),
             )
-        except ValueError as error:
+        except (ValueError, ConfigError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except JobBusyError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -157,21 +197,19 @@ def create_app(
 
         def run(progress) -> dict[str, Any]:
             report = run_preflight(session.client, session.config)
-            with_session_preflight(report)
-            if report.failed:
-                raise RuntimeError("pre-flight checks failed: " + "; ".join(
-                    c.detail for c in report.checks if not c.ok
-                ))
-            result = scan(session.client, report.primary, report.secondary, progress=progress)
-            csv_path = write_csv(result, session.reports_dir / "dedup_report.csv", session.config.immich_url)
-            with_scan_result(result)
-            return {"pair_count": result.stats.pair_count, "report_csv": str(csv_path)}
-
-        def with_session_preflight(report) -> None:
             session.preflight = report
-
-        def with_scan_result(result) -> None:
+            if report.failed:
+                raise RuntimeError(
+                    "pre-flight checks failed: " + "; ".join(c.detail for c in report.checks if not c.ok)
+                )
+            result = scan(
+                session.client, report.primary, report.secondaries, users=report.users, progress=progress
+            )
+            csv_path = write_csv(
+                result, session.reports_dir / "dedup_report.csv", session.config.immich_url
+            )
             session.scan_result = result
+            return {"group_count": result.stats.group_count, "report_csv": str(csv_path)}
 
         try:
             return session.run_job("scan", run)
@@ -183,7 +221,6 @@ def create_app(
         payload: dict[str, Any] = {"job": session.job.as_dict()}
         if session.job.running:
             return payload
-        # include enough context to render step counts while idle
         result = session.scan_result
         payload["stats"] = stats_dto(result) if result else None
         payload["last_result"] = session.last_result
@@ -202,31 +239,33 @@ def create_app(
         _: None = Depends(require_token),
     ) -> dict[str, Any]:
         result = scan_or_404()
-        pairs = result.pairs
+        groups = result.groups
         if filter == "eligible":
-            pairs = [p for p in pairs if p.checksum not in result.excluded]
+            groups = [g for g in groups if g.checksum not in result.excluded]
         elif filter == "excluded":
-            pairs = [p for p in pairs if p.checksum in result.excluded]
+            groups = [g for g in groups if g.checksum in result.excluded]
         elif filter == "live-photo":
-            pairs = [p for p in pairs if p.live_photo != LivePhotoCase.ALIGNED]
+            groups = [
+                g for g in groups if any(case != LivePhotoCase.ALIGNED for case in g.live_photo.values())
+            ]
         base_url = session.config.immich_url
         return {
-            "total": len(pairs),
-            "items": [pair_dto(result, p, base_url) for p in pairs[offset : offset + limit]],
+            "total": len(groups),
+            "items": [group_dto(result, g, base_url) for g in groups[offset : offset + limit]],
         }
 
     @app.get("/api/pairs/{checksum}")
     def get_pair(checksum: str, _: None = Depends(require_token)) -> dict[str, Any]:
         result = scan_or_404()
-        pair = next((p for p in result.pairs if p.checksum == checksum), None)
-        if pair is None:
+        group = next((g for g in result.groups if g.checksum == checksum), None)
+        if group is None:
             raise HTTPException(status_code=404, detail="unknown checksum")
-        return pair_dto(result, pair, session.config.immich_url)
+        return group_dto(result, group, session.config.immich_url)
 
     @app.post("/api/pairs/{checksum}/exclude")
     def exclude_pair(checksum: str, _: None = Depends(require_token)) -> dict[str, Any]:
         result = scan_or_404()
-        if not any(p.checksum == checksum for p in result.pairs):
+        if not any(g.checksum == checksum for g in result.groups):
             raise HTTPException(status_code=404, detail="unknown checksum")
         result.excluded.add(checksum)
         return {"checksum": checksum, "excluded": True}
@@ -238,9 +277,7 @@ def create_app(
         return {"checksum": checksum, "excluded": False}
 
     @app.post("/api/apply")
-    def start_apply(
-        body: dict[str, Any], _: None = Depends(require_token)
-    ) -> dict[str, Any]:
+    def start_apply(body: dict[str, Any], _: None = Depends(require_token)) -> dict[str, Any]:
         scan_or_404()
         options = ApplyOptions(
             merge_metadata=bool(body.get("merge_metadata", False)),
@@ -252,7 +289,7 @@ def create_app(
             result = session.scan_result
             journal = Journal(session.new_journal_path())
             try:
-                outcome = apply_pairs(session.client, result, options, journal, progress=progress)
+                outcome = apply_groups(session.client, result, options, journal, progress=progress)
             finally:
                 journal.close()
             return {"summary": outcome.summary(), "journal": journal.path.name}
@@ -295,7 +332,8 @@ def create_app(
 
         def run(progress) -> dict[str, Any]:
             journal = Journal(path)
-            outcome = undo_journal(session.client, journal, progress=progress)
+            users = session.ensure_preflight().users
+            outcome = undo_journal(session.client, journal, users, progress=progress)
             return {
                 "restored_assets": outcome.restored_assets,
                 "unrestorable": outcome.unrestorable,
@@ -316,28 +354,38 @@ def create_app(
         size: str = Query("preview", pattern="^(thumbnail|preview|fullsize)$"),
         _: None = Depends(require_token),
     ) -> Response:
-        role = _owner_role_for(session.scan_result, asset_id)
+        result = session.scan_result
+        handle = _owner_handle(result, asset_id) or session.config.primary_email
         try:
-            content = session.client.get_thumbnail(role, asset_id, size=size)
+            content = session.client.get_thumbnail(handle, asset_id, size=size)
         except ImmichApiError:
-            # role unknown or partner permissions changed — try the other key
-            fallback = SECONDARY if role == PRIMARY else PRIMARY
-            try:
-                content = session.client.get_thumbnail(fallback, asset_id, size=size)
-            except ImmichApiError as error:
-                raise HTTPException(status_code=404, detail=str(error)) from error
-        return Response(content=content, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+            for fallback in session.client.handles:
+                if fallback == handle:
+                    continue
+                try:
+                    content = session.client.get_thumbnail(fallback, asset_id, size=size)
+                    break
+                except ImmichApiError:
+                    continue
+            else:
+                raise HTTPException(status_code=404, detail="thumbnail not available") from None
+        return Response(
+            content=content, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"}
+        )
 
     @app.post("/api/fuzzy")
     def run_fuzzy(_: None = Depends(require_token)) -> dict[str, Any]:
         """Report-only near-duplicate pass using the current scan's raw asset data."""
+        require_configured()
         result = scan_or_404()
-        from immich_dedup.core.match import _user_assets
-
-        primary_assets = _user_assets(session.client, result.primary, None)
-        secondary_assets = _user_assets(session.client, result.secondary, None)
-        candidates = fuzzy_candidates(primary_assets, secondary_assets)
-        path = write_fuzzy_csv(candidates, session.reports_dir / "dedup_fuzzy.csv", session.config.immich_url)
+        primary_assets = user_assets(session.client, result.primary)
+        all_secondary_assets = [
+            asset for secondary in result.secondaries for asset in user_assets(session.client, secondary)
+        ]
+        candidates = fuzzy_candidates(primary_assets, all_secondary_assets)
+        path = write_fuzzy_csv(
+            candidates, session.reports_dir / "dedup_fuzzy.csv", session.config.immich_url
+        )
         base_url = session.config.immich_url
         return {
             "count": len(candidates),
@@ -362,6 +410,7 @@ def create_app(
     if dist.exists():
         app.mount("/", StaticFiles(directory=dist, html=True), name="web")
     else:
+
         @app.get("/")
         def index() -> dict[str, str]:
             return {"hint": "frontend not built — run `npm run build` in web/"}
@@ -369,14 +418,15 @@ def create_app(
     return app
 
 
-def _owner_role_for(result: ScanResult | None, asset_id: str) -> str:
+def _owner_handle(result: ScanResult | None, asset_id: str) -> str | None:
     if result is not None:
-        for pair in result.pairs:
-            if pair.keeper.id == asset_id:
-                return PRIMARY
-            if pair.loser.id == asset_id:
-                return SECONDARY
-    return PRIMARY
+        for group in result.groups:
+            if group.keeper.id == asset_id:
+                return group.keeper.owner_email
+            for loser in group.losers:
+                if loser.id == asset_id:
+                    return loser.owner_email
+    return None
 
 
 def main() -> None:
@@ -392,19 +442,20 @@ def main() -> None:
     try:
         config = load_config(args.env_file)
     except ConfigError:
-        config = empty_config()
+        config = None
         print("No .env configuration found — open the UI to set the connection details in the browser.")
-    client = ImmichClient(
-        config.immich_url,
-        config.primary_api_key,
-        config.secondary_api_key,
-    )
-    session = Session(
-        config=config,
-        client=client,
-        reports_dir=config.reports_dir,
-        env_file=Path(args.env_file) if args.env_file else Path(".env"),
-    )
+    if config is not None:
+        session = Session(
+            config=config,
+            client=build_client(config),
+            reports_dir=config.reports_dir,
+            env_file=Path(args.env_file) if args.env_file else Path(".env"),
+        )
+    else:
+        session = unconfigured_session(
+            reports_dir=Path("reports"),
+            env_file=Path(args.env_file) if args.env_file else Path(".env"),
+        )
     app = create_app(session, token=args.token)
     uvicorn.run(app, host=args.host, port=args.port)
 

@@ -1,7 +1,7 @@
-"""HTTP client for the public Immich API, keyed by user role (primary/secondary).
+"""HTTP client for the public Immich API, keyed by user email handle.
 
-Every request goes out with the ``x-api-key`` header of the role the call is made
-for. Endpoints used (Immich v3 API):
+One httpx client per API key; every request goes out with the ``x-api-key``
+header of the user it is made for. Endpoints used (Immich v3 API):
 
 - GET    /api/users/me
 - POST   /api/search/metadata          (paginated asset listing, withExif)
@@ -24,8 +24,6 @@ from typing import Any
 
 import httpx
 
-from immich_dedup.core.models import PRIMARY, SECONDARY
-
 PAGE_SIZE = 1000  # API maximum for search/metadata
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
@@ -43,27 +41,31 @@ class ImmichAuthError(ImmichApiError):
 
 
 class ImmichClient:
-    """One client instance holds two httpx clients, one per API key."""
+    """Holds one httpx client per user, addressed by email handle."""
 
     def __init__(
         self,
         base_url: str,
-        primary_api_key: str,
-        secondary_api_key: str,
+        keys: dict[str, str],
         *,
         transport: httpx.BaseTransport | None = None,
         timeout: float = 60.0,
     ):
-        keys = {PRIMARY: primary_api_key, SECONDARY: secondary_api_key}
+        if not keys:
+            raise ValueError("at least one user key is required")
         self._clients: dict[str, httpx.Client] = {
-            role: httpx.Client(
+            handle: httpx.Client(
                 base_url=base_url,
                 headers={"x-api-key": key},
                 timeout=timeout,
                 transport=transport,
             )
-            for role, key in keys.items()
+            for handle, key in keys.items()
         }
+
+    @property
+    def handles(self) -> list[str]:
+        return list(self._clients)
 
     def close(self) -> None:
         for client in self._clients.values():
@@ -79,14 +81,14 @@ class ImmichClient:
 
     def _request(
         self,
-        role: str,
+        handle: str,
         method: str,
         path: str,
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> httpx.Response:
-        client = self._clients[role]
+        client = self._clients[handle]
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
             if attempt:
@@ -103,7 +105,7 @@ class ImmichClient:
                 continue
             if response.status_code == 401:
                 raise ImmichAuthError(
-                    f"{method} {path} -> 401 Unauthorized: the {role} API key is invalid."
+                    f"{method} {path} -> 401 Unauthorized: the API key for {handle} is invalid."
                 )
             if response.status_code >= 400:
                 raise ImmichApiError(
@@ -115,22 +117,22 @@ class ImmichClient:
 
     def _request_json(
         self,
-        role: str,
+        handle: str,
         method: str,
         path: str,
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        return self._request(role, method, path, json=json, params=params).json()
+        return self._request(handle, method, path, json=json, params=params).json()
 
     # -- endpoints ---------------------------------------------------------
 
-    def get_me(self, role: str) -> dict[str, Any]:
-        return dict(self._request_json(role, "GET", "/api/users/me"))
+    def get_me(self, handle: str) -> dict[str, Any]:
+        return dict(self._request_json(handle, "GET", "/api/users/me"))
 
     def iter_assets(
-        self, role: str, *, with_exif: bool = True, progress: Callable[[int, int | None], None] | None = None
+        self, handle: str, *, with_exif: bool = True, progress: Callable[[int, int | None], None] | None = None
     ) -> Iterator[dict[str, Any]]:
         """Yield every asset visible to this user's search, one page at a time.
 
@@ -144,7 +146,7 @@ class ImmichClient:
             body = {"page": page, "size": PAGE_SIZE}
             if with_exif:
                 body["withExif"] = True
-            payload = self._request_json(role, "POST", "/api/search/metadata", json=body)
+            payload = self._request_json(handle, "POST", "/api/search/metadata", json=body)
             assets = payload.get("assets", {})
             items = assets.get("items", [])
             for item in items:
@@ -157,45 +159,47 @@ class ImmichClient:
                 return
             page = int(next_page)
 
-    def get_albums_for_asset(self, role: str, asset_id: str) -> list[dict[str, Any]]:
-        payload = self._request_json(role, "GET", "/api/albums", params={"assetId": asset_id})
+    def get_albums_for_asset(self, handle: str, asset_id: str) -> list[dict[str, Any]]:
+        payload = self._request_json(handle, "GET", "/api/albums", params={"assetId": asset_id})
         return list(payload) if isinstance(payload, list) else []
 
-    def add_album_assets(self, role: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
+    def add_album_assets(self, handle: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
         """Returns one BulkIdResponseDto per asset id: {id, success, error?}."""
         return list(
-            self._request_json(role, "POST", f"/api/albums/{album_id}/assets", json={"ids": asset_ids})
+            self._request_json(handle, "POST", f"/api/albums/{album_id}/assets", json={"ids": asset_ids})
         )
 
-    def remove_album_assets(self, role: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
+    def remove_album_assets(self, handle: str, album_id: str, asset_ids: list[str]) -> list[dict[str, Any]]:
         return list(
             self._request_json(
-                role, "DELETE", f"/api/albums/{album_id}/assets", json={"ids": asset_ids}
+                handle, "DELETE", f"/api/albums/{album_id}/assets", json={"ids": asset_ids}
             )
         )
 
-    def trash_assets(self, role: str, asset_ids: list[str], *, force: bool = False) -> list[dict[str, Any]]:
+    def trash_assets(self, handle: str, asset_ids: list[str], *, force: bool = False) -> list[dict[str, Any]]:
         return list(
             self._request_json(
-                role, "DELETE", "/api/assets", json={"ids": asset_ids, "force": force}
+                handle, "DELETE", "/api/assets", json={"ids": asset_ids, "force": force}
             )
         )
 
-    def restore_assets(self, role: str, asset_ids: list[str]) -> dict[str, Any]:
-        return dict(self._request_json(role, "POST", "/api/trash/restore/assets", json={"ids": asset_ids}))
+    def restore_assets(self, handle: str, asset_ids: list[str]) -> dict[str, Any]:
+        return dict(
+            self._request_json(handle, "POST", "/api/trash/restore/assets", json={"ids": asset_ids})
+        )
 
-    def update_asset(self, role: str, asset_id: str, **fields: Any) -> dict[str, Any]:
-        return dict(self._request_json(role, "PUT", f"/api/assets/{asset_id}", json=fields))
+    def update_asset(self, handle: str, asset_id: str, **fields: Any) -> dict[str, Any]:
+        return dict(self._request_json(handle, "PUT", f"/api/assets/{asset_id}", json=fields))
 
-    def get_asset(self, role: str, asset_id: str) -> dict[str, Any]:
-        return dict(self._request_json(role, "GET", f"/api/assets/{asset_id}"))
+    def get_asset(self, handle: str, asset_id: str) -> dict[str, Any]:
+        return dict(self._request_json(handle, "GET", f"/api/assets/{asset_id}"))
 
-    def get_partners(self, role: str) -> dict[str, list[dict[str, Any]]]:
-        by = self._request_json(role, "GET", "/api/partners", params={"direction": "shared-by"})
-        with_ = self._request_json(role, "GET", "/api/partners", params={"direction": "shared-with"})
+    def get_partners(self, handle: str) -> dict[str, list[dict[str, Any]]]:
+        by = self._request_json(handle, "GET", "/api/partners", params={"direction": "shared-by"})
+        with_ = self._request_json(handle, "GET", "/api/partners", params={"direction": "shared-with"})
         return {"shared-by": list(by), "shared-with": list(with_)}
 
-    def get_thumbnail(self, role: str, asset_id: str, *, size: str = "preview") -> bytes:
+    def get_thumbnail(self, handle: str, asset_id: str, *, size: str = "preview") -> bytes:
         return self._request(
-            role, "GET", f"/api/assets/{asset_id}/thumbnail", params={"size": size}
+            handle, "GET", f"/api/assets/{asset_id}/thumbnail", params={"size": size}
         ).content

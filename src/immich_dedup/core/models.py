@@ -1,17 +1,15 @@
-"""Shared data models for the dedup pipeline."""
+"""Shared data models for the dedup pipeline (1 primary + N secondaries)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
 
-PRIMARY = "primary"
-SECONDARY = "secondary"
-
 
 @dataclass(frozen=True)
 class User:
-    role: str  # PRIMARY or SECONDARY
+    """A participating user; the email doubles as the API-client handle."""
+
     id: str
     email: str
     name: str = ""
@@ -27,8 +25,8 @@ class AlbumRef:
 @dataclass
 class AssetInfo:
     id: str
-    owner_role: str
     owner_id: str
+    owner_email: str
     checksum: str  # base64 SHA-1 of the original file, as returned by the API
     type: str  # IMAGE or VIDEO
     original_file_name: str
@@ -46,7 +44,7 @@ class AssetInfo:
 
 
 class LivePhotoCase:
-    """How the motion-video situation of a duplicate pair should be handled."""
+    """How the motion-video situation of a keeper/loser pair should be handled."""
 
     ALIGNED = "aligned"  # both stills have motion, or both have none
     KEEPER_LACKS_MOTION = "keeper-lacks-motion"
@@ -54,28 +52,51 @@ class LivePhotoCase:
 
 
 @dataclass
-class DuplicatePair:
+class DuplicateGroup:
+    """One keeper (owned by the primary) plus every other user's copy."""
+
     checksum: str
     keeper: AssetInfo
-    loser: AssetInfo
-    live_photo: str  # LivePhotoCase value
-    # Motion-video asset ids trashed together with the loser (default policy).
-    motion_ids: list[str] = field(default_factory=list)
-    # Bytes reclaimed when this pair is applied (loser + motions).
+    losers: list[AssetInfo]
+    # loser asset id -> LivePhotoCase value
+    live_photo: dict[str, str] = field(default_factory=dict)
+    # loser asset id -> motion video ids trashed together with that loser
+    motion_ids: dict[str, list[str]] = field(default_factory=dict)
+    # loser asset id -> bytes reclaimed when that loser is applied
+    loser_reclaimable: dict[str, int] = field(default_factory=dict)
+    # Bytes reclaimed when this group is applied (losers + motions).
     reclaimable_bytes: int = 0
+
+
+@dataclass
+class SkippedGroup:
+    """A duplicate group the primary never imported — reported, not touched."""
+
+    checksum: str
+    owner_emails: list[str]
+    asset_ids: list[str]
+
+
+@dataclass
+class UserStats:
+    assets: int = 0
+    trashed_files: int = 0
+    trashed_bytes: int = 0
 
 
 @dataclass
 class ScanStats:
     primary_assets: int = 0
-    secondary_assets: int = 0
-    pair_count: int = 0
+    group_count: int = 0
+    skipped_no_primary: int = 0
     reclaimable_assets: int = 0  # losers + motion videos that apply would trash
     reclaimable_bytes: int = 0
     affected_albums: int = 0
     live_photo_aligned: int = 0
     live_photo_keeper_lacks_motion: int = 0
     live_photo_loser_lacks_motion: int = 0
+    # secondary email -> per-user view of the dedup (library size, what apply trashes)
+    per_user: dict[str, UserStats] = field(default_factory=dict)
 
     @property
     def reclaimable_human(self) -> str:
@@ -94,13 +115,21 @@ def human_size(num_bytes: int) -> str:
 @dataclass
 class ScanResult:
     primary: User
-    secondary: User
-    pairs: list[DuplicatePair]
+    secondaries: list[User]
+    groups: list[DuplicateGroup]
     stats: ScanStats
+    # user_id -> User registry covering primary + secondaries
+    users: dict[str, User] = field(default_factory=dict)
+    skipped: list[SkippedGroup] = field(default_factory=list)
     # IDs of assets that are the motion-video half of a live photo (by livePhotoVideoId).
     motion_ids: set[str] = field(default_factory=set)
     # Checksums excluded from apply by the user (session-level exclusion list).
     excluded: set[str] = field(default_factory=set)
 
-    def eligible_pairs(self) -> list[DuplicatePair]:
-        return [p for p in self.pairs if p.checksum not in self.excluded]
+    def eligible_groups(self) -> list[DuplicateGroup]:
+        return [group for group in self.groups if group.checksum not in self.excluded]
+
+    def handle_for_owner(self, owner_id: str) -> str | None:
+        """Email handle for the API client that owns this user id."""
+        user = self.users.get(owner_id)
+        return user.email if user else None

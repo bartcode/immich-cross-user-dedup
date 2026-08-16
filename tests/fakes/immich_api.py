@@ -376,16 +376,14 @@ class FakeImmich:
         return set(self.albums[album_id]["asset_ids"])
 
 
-def make_client(fake: FakeImmich, primary_key: str, secondary_key: str):
-    """Build an ImmichClient wired to the fake server."""
+def make_client(fake: FakeImmich, keys: dict[str, str]):
+    """Build an ImmichClient wired to the fake server.
+
+    ``keys`` maps email handles to API keys, e.g.
+    ``{"alice@example.com": key_a, "bob@example.com": key_b}``."""
     from immich_dedup.core.api import ImmichClient
 
-    return ImmichClient(
-        BASE,
-        primary_key,
-        secondary_key,
-        transport=fake.transport(),
-    )
+    return ImmichClient(BASE, keys, transport=fake.transport())
 
 
 def days_ago(n: int) -> datetime:

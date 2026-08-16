@@ -1,82 +1,67 @@
-from immich_dedup.core.config import DedupConfig
+from immich_dedup.core.config import DedupConfig, SecondaryCredentials
 from immich_dedup.core.preflight import run_preflight
 
-from ..fakes.immich_api import FakeImmich, make_client
+from ..fakes.immich_api import make_client
+from ..fakes.world import PRIMARY_EMAIL, World
 
 
-def config_for(fake_urls="http://immich.test"):
-    return DedupConfig(
-        immich_url=fake_urls,
-        primary_email="primary@example.com",
-        secondary_email="secondary@example.com",
-        primary_api_key="pk",
-        secondary_api_key="sk",
-    )
+def test_preflight_ok_with_partner_star():
+    world = World(secondary_emails=("bob@example.com", "carol@example.com"))
 
-
-def build(fake, primary_key, secondary_key):
-    return make_client(fake, primary_key, secondary_key)
-
-
-def setup_two_users(fake):
-    primary_id, primary_key = fake.add_user("primary@example.com")
-    secondary_id, secondary_key = fake.add_user("secondary@example.com")
-    return primary_id, primary_key, secondary_id, secondary_key
-
-
-def test_preflight_ok_with_partner_sharing():
-    fake = FakeImmich()
-    p_id, p_key, s_id, s_key = setup_two_users(fake)
-    fake.set_partner(p_id, s_id)
-    fake.set_partner(s_id, p_id)
-
-    report = run_preflight(build(fake, p_key, s_key), config_for())
+    report = world.preflight()
     assert not report.failed
-    assert report.primary is not None and report.secondary is not None
-    assert report.primary.id == p_id
-    assert report.partners_bidirectional is True
+    assert report.primary is not None
+    assert report.primary.id == world.p_id
+    assert len(report.secondaries) == 2
+    assert set(report.partner_status.values()) == {True}
+    assert set(report.users) == {world.p_id, *(user_id for user_id, _ in world.secondary.values())}
 
 
-def test_preflight_fails_on_swapped_keys():
-    fake = FakeImmich()
-    _, p_key, _, s_key = setup_two_users(fake)
-    # keys swapped: primary slot holds secondary's key
-    report = run_preflight(build(fake, s_key, p_key), config_for())
-    assert report.failed
-    assert any("not swapped" in check.detail or "belongs to" in check.detail for check in report.checks)
-
-
-def test_preflight_warns_when_partner_sharing_missing():
-    fake = FakeImmich()
-    p_id, p_key, s_id, s_key = setup_two_users(fake)
-
-    report = run_preflight(build(fake, p_key, s_key), config_for())
-    assert report.failed
-    assert report.partners_bidirectional is False
-    assert any("partner" in check.name for check in report.checks if not check.ok)
-
-
-def test_preflight_rejects_same_user_for_both_keys():
-    fake = FakeImmich()
-    p_id, p_key, _, _ = setup_two_users(fake)
-    other_key = fake.add_api_key(p_id)  # same user, different API key
-
-    same_email_config = DedupConfig(
-        immich_url="http://immich.test",
-        primary_email="primary@example.com",
-        secondary_email="primary@example.com",
-        primary_api_key="pk",
-        secondary_api_key="sk",
+def test_preflight_fails_on_misassigned_key():
+    world = World(secondary_emails=("bob@example.com", "carol@example.com"))
+    bob_key = world.secondary["bob@example.com"][1]
+    world.client.close()
+    world.client = make_client(
+        world.fake,
+        {
+            PRIMARY_EMAIL: world.p_key,
+            "bob@example.com": bob_key,
+            "carol@example.com": bob_key,  # carol's slot holds bob's key
+        },
     )
-    report = run_preflight(build(fake, p_key, other_key), same_email_config)
+
+    report = world.preflight()
     assert report.failed
-    assert any("same user" in check.detail for check in report.checks)
+    assert any("belongs to" in check.detail for check in report.checks if not check.ok)
 
 
-def test_preflight_rejects_key_of_wrong_user_in_slot():
-    fake = FakeImmich()
-    _, p_key, _, s_key = setup_two_users(fake)
-    # secondary's key in the primary slot: email mismatch is reported
-    report = run_preflight(build(fake, s_key, s_key), config_for())
+def test_preflight_reports_each_secondary_partner_status():
+    world = World(secondary_emails=("bob@example.com", "carol@example.com"))
+    carol_id = world.secondary["carol@example.com"][0]
+    world.fake.partners.pop((world.p_id, carol_id))  # primary no longer shares with carol
+
+    report = world.preflight()
     assert report.failed
-    assert any("belongs to" in check.detail for check in report.checks)
+    assert report.partner_status["bob@example.com"] is True
+    assert report.partner_status["carol@example.com"] is False
+    failed_names = [check.name for check in report.checks if not check.ok]
+    assert "partner sharing with carol@example.com" in failed_names
+
+
+def test_preflight_rejects_primary_listed_as_secondary():
+    world = World()
+    other_key = world.fake.add_api_key(world.p_id)
+    world.config = DedupConfig(
+        immich_url=world.config.immich_url,
+        primary_email=PRIMARY_EMAIL,
+        primary_api_key=world.p_key,
+        secondaries=(SecondaryCredentials(PRIMARY_EMAIL, other_key),),
+    )
+    report = run_preflight(world.client, world.config)
+    # same user for both keys is caught either by validation or the distinct check
+    assert report.failed
+    assert any(
+        "must not also be listed" in check.detail or "already-listed" in check.detail
+        for check in report.checks
+        if not check.ok
+    )

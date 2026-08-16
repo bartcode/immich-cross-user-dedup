@@ -7,7 +7,7 @@ from pathlib import Path
 
 from immich_dedup.core.models import AssetInfo, ScanResult, human_size
 
-PAIR_FIELDS = [
+GROUP_FIELDS = [
     "checksum",
     "type",
     "live_photo_case",
@@ -16,6 +16,7 @@ PAIR_FIELDS = [
     "keeper_taken_at",
     "keeper_url",
     "loser_id",
+    "loser_owner",
     "loser_file",
     "loser_taken_at",
     "loser_url",
@@ -47,27 +48,31 @@ def asset_url(base_url: str, asset_id: str) -> str:
 def write_csv(result: ScanResult, path: Path, base_url: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=PAIR_FIELDS)
+        writer = csv.DictWriter(handle, fieldnames=GROUP_FIELDS)
         writer.writeheader()
-        for pair in result.pairs:
-            writer.writerow(
-                {
-                    "checksum": pair.checksum,
-                    "type": pair.keeper.type,
-                    "live_photo_case": pair.live_photo,
-                    "keeper_id": pair.keeper.id,
-                    "keeper_file": pair.keeper.original_file_name,
-                    "keeper_taken_at": pair.keeper.file_created_at.isoformat() if pair.keeper.file_created_at else "",
-                    "keeper_url": asset_url(base_url, pair.keeper.id),
-                    "loser_id": pair.loser.id,
-                    "loser_file": pair.loser.original_file_name,
-                    "loser_taken_at": pair.loser.file_created_at.isoformat() if pair.loser.file_created_at else "",
-                    "loser_url": asset_url(base_url, pair.loser.id),
-                    "loser_albums": "; ".join(album.name for album in pair.loser.albums),
-                    "loser_bytes": pair.loser.file_size_bytes,
-                    "total_reclaimable_bytes": pair.reclaimable_bytes,
-                }
-            )
+        for group in result.groups:
+            for loser in group.losers:
+                writer.writerow(
+                    {
+                        "checksum": group.checksum,
+                        "type": group.keeper.type,
+                        "live_photo_case": group.live_photo.get(loser.id, "aligned"),
+                        "keeper_id": group.keeper.id,
+                        "keeper_file": group.keeper.original_file_name,
+                        "keeper_taken_at": group.keeper.file_created_at.isoformat()
+                        if group.keeper.file_created_at
+                        else "",
+                        "keeper_url": asset_url(base_url, group.keeper.id),
+                        "loser_id": loser.id,
+                        "loser_owner": loser.owner_email,
+                        "loser_file": loser.original_file_name,
+                        "loser_taken_at": loser.file_created_at.isoformat() if loser.file_created_at else "",
+                        "loser_url": asset_url(base_url, loser.id),
+                        "loser_albums": "; ".join(album.name for album in loser.albums),
+                        "loser_bytes": loser.file_size_bytes,
+                        "total_reclaimable_bytes": group.loser_reclaimable.get(loser.id, loser.file_size_bytes),
+                    }
+                )
     return path
 
 
@@ -105,21 +110,39 @@ def write_fuzzy_csv(candidates: list[tuple[AssetInfo, AssetInfo]], path: Path, b
 def summary_text(result: ScanResult, fuzzy_count: int = 0) -> str:
     stats = result.stats
     lines = [
-        f"Primary:   {result.primary.email} — {stats.primary_assets} assets",
-        f"Secondary: {result.secondary.email} — {stats.secondary_assets} assets",
+        f"Primary:   {result.primary.email} — {stats.primary_assets} assets (keeps its copies)",
+    ]
+    for secondary in result.secondaries:
+        user_stats = stats.per_user.get(secondary.email)
+        lines.append(
+            f"Secondary: {secondary.email} — {user_stats.assets if user_stats else 0} assets, "
+            f"{user_stats.trashed_files if user_stats else 0} would be trashed "
+            f"({human_size(user_stats.trashed_bytes) if user_stats else '0 B'})"
+        )
+    lines += [
         "",
-        f"Cross-user duplicate pairs: {stats.pair_count}",
+        f"Cross-user duplicate groups: {stats.group_count}",
         f"  live photos, both sides equal:    {stats.live_photo_aligned}",
         f"  live photos, keeper lacks motion: {stats.live_photo_keeper_lacks_motion}",
         f"  live photos, loser lacks motion:  {stats.live_photo_loser_lacks_motion}",
+    ]
+    if stats.skipped_no_primary:
+        owners = sorted(
+            {email for skipped in result.skipped for email in skipped.owner_emails}
+        )
+        lines += [
+            "",
+            f"Skipped (no primary copy; only secondaries own these): {stats.skipped_no_primary} groups"
+            f" involving {', '.join(owners)}",
+        ]
+    lines += [
         "",
-        f"Reclaimable: {stats.reclaimable_assets} assets, {human_size(stats.reclaimable_bytes)} "
+        f"Reclaimable: {stats.reclaimable_assets} assets, {stats.reclaimable_human} "
         "(originals; Immich also purges previews/thumbnails)",
         f"Albums affected: {stats.affected_albums}",
     ]
     if fuzzy_count:
         lines.append(f"Byte-different near-duplicates (review manually): {fuzzy_count}")
-    if stats.pair_count == 0:
-        lines.append("")
-        lines.append("No cross-user duplicates found — nothing to do.")
+    if stats.group_count == 0 and stats.skipped_no_primary == 0:
+        lines += ["", "No cross-user duplicates found — nothing to do."]
     return "\n".join(lines)
