@@ -224,13 +224,14 @@ def create_app(
 
     @app.get("/api/job")
     def get_job(_: None = Depends(require_token)) -> dict[str, Any]:
-        payload: dict[str, Any] = {"job": session.job.as_dict()}
-        if session.job.running:
-            return payload
+        # stats/last_result are always included — also while a job is running —
+        # so a browser refresh never wipes the UI back to "run a scan first"
         result = session.scan_result
-        payload["stats"] = stats_dto(result) if result else None
-        payload["last_result"] = session.last_result
-        return payload
+        return {
+            "job": session.job.as_dict(),
+            "stats": stats_dto(result) if result else None,
+            "last_result": session.last_result,
+        }
 
     @app.post("/api/job/cancel")
     def cancel_job(_: None = Depends(require_token)) -> dict[str, Any]:

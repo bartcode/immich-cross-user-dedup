@@ -405,3 +405,29 @@ def test_journal_undo_detail_falls_back_to_scan_for_old_journals(world, tmp_path
     restored = {asset["id"]: asset for asset in detail["undo_detail"]["assets"]}
     assert restored[loser]["name"] == "cat.jpg"  # resolved from the stored scan
     assert detail["undo_detail"]["albums"][0]["keeper_name"] == "cat.jpg"
+
+
+def test_job_endpoint_includes_stats_while_a_job_runs(tmp_path):
+    """A browser refresh mid-job must not wipe the UI back to 'run a scan first':
+    /api/job always carries the current stats, running or not."""
+    import time
+
+    world = World()
+    world.fake.add_asset(world.p_id, "sum-1")
+    world.fake.add_asset(world.s_id, "sum-1")
+    api, session = build_app(world, tmp_path)
+    api.post("/api/scan")
+    wait_for_job(api)
+
+    def slow_job(progress):
+        for index in range(50):
+            progress("holding", index, 50)
+            time.sleep(0.01)
+        return {"done": True}
+
+    session.run_job("apply", slow_job)
+    payload = api.get("/api/job").json()
+    assert payload["job"]["running"] is True
+    assert payload["stats"] is not None
+    assert payload["stats"]["group_count"] == 1
+    wait_for_job(api)
