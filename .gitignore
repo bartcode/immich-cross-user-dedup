@@ -1,0 +1,21 @@
+# environments
+.venv/
+venv/
+
+# secrets & local config
+.env
+
+# script output
+reports/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
