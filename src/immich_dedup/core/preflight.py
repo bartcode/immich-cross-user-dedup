@@ -85,23 +85,58 @@ def run_preflight(client: ImmichClient, config: DedupConfig) -> PreflightReport:
         report.secondaries.append(secondary)
         report.users[secondary.id] = secondary
 
-    # Probe the read scopes every key needs (asset.statistics + album.read via
-    # count/list calls) so missing scopes surface here — Immich's error names
-    # the exact missing permission. Write scopes (asset.delete,
-    # albumAsset.create/delete, asset.update) are exercised at apply time.
+    # Route-based scope verification: every route the tool uses is probed with
+    # a nonexistent id. Immich's auth guard checks API-key scopes BEFORE the
+    # route runs, so a missing scope answers 403 naming exactly what THIS
+    # server demands for THAT route — version-agnostic, nothing is mutated.
+    # (method, path, body, whether the scope is optional for this role)
+    _random = "00000000-0000-4000-8000-000000000000"
+    common_probes: list[tuple[str, str, dict | None, bool]] = [
+        ("GET", "/api/partners", None, False),
+        ("POST", "/api/search/metadata", {"page": 1, "size": 1}, False),
+        ("POST", "/api/search/statistics", {}, False),
+        ("GET", "/api/albums", None, False),
+        ("GET", f"/api/assets/{_random}", None, False),
+        ("GET", f"/api/assets/{_random}/thumbnail?size=preview", None, False),
+        ("PUT", f"/api/albums/{_random}/assets", {"ids": [_random]}, False),
+        ("DELETE", f"/api/albums/{_random}/assets", {"ids": [_random]}, False),
+    ]
+    primary_only_probes = [
+        # only needed for --merge-metadata (and its undo)
+        ("PUT", f"/api/assets/{_random}", {"isFavorite": True}, True),
+    ]
+    secondary_only_probes = [
+        ("PUT", f"/api/albums/{_random}/users", {"albumUsers": [{"userId": _random, "role": "editor"}]}, False),
+        ("DELETE", f"/api/albums/{_random}/user/{_random}", None, False),
+        ("DELETE", "/api/assets", {"ids": [_random], "force": False}, False),
+    ]
     for user in [u for u in (report.primary, *report.secondaries) if u is not None]:
-        try:
-            assets = client.asset_count(user.email)
-            albums = len(client.list_albums(user.email))
-            checks.append(
-                Check(
-                    f"{user.email} scopes",
-                    True,
-                    f"asset.statistics + album.read verified ({assets} assets, {albums} albums visible)",
-                )
-            )
-        except ImmichApiError as error:
-            checks.append(Check(f"{user.email} scopes", False, str(error)))
+        probes = list(common_probes)
+        if user is report.primary:
+            probes += primary_only_probes
+        else:
+            probes += secondary_only_probes
+        missing: list[str] = []
+        missing_optional: list[str] = []
+        for method, path, body, optional in probes:
+            scope = client.probe_route(user.email, method, path.split("?")[0], json=body)
+            if scope:
+                (missing_optional if optional else missing).append(scope)
+        detail = ""
+        if missing:
+            detail = f"missing scopes: {', '.join(sorted(set(missing)))} — update the key (or use the 'all' scope)"
+        else:
+            detail = "all required scopes verified"
+            if missing_optional:
+                detail += f" ({', '.join(sorted(set(missing_optional)))} missing — only needed for merge-metadata)"
+            assets = albums = None
+            try:
+                assets = client.asset_count(user.email)
+                albums = len(client.list_albums(user.email))
+                detail += f"; {assets} assets, {albums} albums visible"
+            except ImmichApiError:
+                pass
+        checks.append(Check(f"{user.email} scopes", not missing, detail))
 
     if report.primary is not None and report.secondaries:
         partners = client.get_partners(report.primary.email)

@@ -113,8 +113,13 @@ def test_preflight_probe_reports_missing_scope():
     assert report.failed
     scope_check = next(c for c in report.checks if c.name == f"{S} scopes")
     assert scope_check.ok is False
-    # Immich names the first missing scope the probe hits (asset.statistics)
-    assert "Missing required permission" in scope_check.detail
+    # every scope this key lacks is named up front, not just the first one
+    for scope in ("partner.read", "asset.read", "asset.statistics", "album.read",
+                  "albumAsset.create", "albumUser.create", "asset.delete"):
+        assert scope in scope_check.detail
+    # the unrestricted primary key passes fully
+    primary_check = next(c for c in report.checks if c.name == f"{P} scopes")
+    assert primary_check.ok is True
 
 
 def test_preflight_probe_passes_with_documented_scopes():
@@ -126,6 +131,10 @@ def test_preflight_probe_passes_with_documented_scopes():
     assert not report.failed, [c.detail for c in report.checks if not c.ok]
     scope_checks = [c for c in report.checks if c.name.endswith(" scopes")]
     assert len(scope_checks) == 2
+    # the primary set has no asset.update — noted as optional, not a failure
+    primary_check = next(c for c in scope_checks if c.name == f"{P} scopes")
+    assert primary_check.ok is True
+    assert "asset.update missing" in primary_check.detail
 
 
 def test_full_pipeline_works_with_minimal_documented_scopes(tmp_path: Path):

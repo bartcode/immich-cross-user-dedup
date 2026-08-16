@@ -185,7 +185,8 @@ export function ConnectionForm({ current, onConfigured }: ConnectionFormProps) {
           <AlertDescription>
             When creating each key in Immich (Account Settings → API Keys), select the scopes listed
             under the corresponding input — or simply the <span className="font-mono text-xs">all</span>{" "}
-            scope. Read scopes are verified by the pre-flight check when you save. Partner sharing is{" "}
+            scope. Every required scope (read AND write) is verified against your server when you
+            save — missing scopes are named per key. Partner sharing is{" "}
             <strong>optional</strong>: without it, affected albums are shared with the primary as
             editor during apply and revoked on undo — nobody gets access to anyone&apos;s full library.
           </AlertDescription>

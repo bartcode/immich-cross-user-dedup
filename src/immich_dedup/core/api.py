@@ -22,6 +22,7 @@ header of the user it is made for. Endpoints used (Immich v3 API):
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -258,3 +259,21 @@ class ImmichClient:
 
     def get_thumbnail(self, handle: str, asset_id: str, *, size: str = "preview") -> bytes:
         return self.get_thumbnail_response(handle, asset_id, size=size).content
+
+    def probe_route(self, handle: str, method: str, path: str, json: dict[str, Any] | None = None) -> str | None:
+        """Probe one route with (typically nonexistent) ids to learn whether the
+        key carries the scope THAT route requires on this server.
+
+        Immich's auth guard checks API-key scopes before the route runs, so a
+        missing scope answers 403 'Missing required permission: <scope>' —
+        returned here — while a satisfied scope merely 404s/400s harmlessly.
+        Never mutates anything real when probed with random ids."""
+        try:
+            self._request(handle, method, path, json=json)
+            return None
+        except ImmichApiError as error:
+            if error.status_code == 403:
+                match = re.search(r"Missing required permission: ([\w.]+)", str(error))
+                if match:
+                    return match.group(1)
+            return None

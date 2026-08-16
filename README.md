@@ -125,11 +125,16 @@ How the scopes map to the calls this tool makes:
 (`albumUser.create`/`albumUser.delete` are only exercised when partner sharing
 is absent; include them in the secondary key anyway so the fallback works.)
 
-The read scopes (`user.read`, `partner.read`, `asset.read`, `album.read`) are
-verified per key by the pre-flight check — Immich's error message names any
-missing scope. The write scopes are exercised at apply time, and the tool never
-hard-deletes, never modifies another user's assets, and never changes server
-settings. The connection form in the web UI shows each key's scope list inline.
+Every required scope — read and write — is verified per key by the pre-flight
+check, using route probes: each endpoint the tool calls is probed with a
+nonexistent id, and since Immich checks API-key scopes *before* the route runs,
+a missing scope answers `403 Missing required permission: <scope>`, naming
+exactly what your server demands for that route (a satisfied scope merely
+404s, and nothing is ever mutated). So the lists above are verified against
+your actual Immich version at connect time — if your server maps a route to a
+different scope, pre-flight names it. The tool never hard-deletes, never
+modifies another user's assets, and never changes server settings. The
+connection form in the web UI shows each key's scope list inline.
 
 ## Setup
 
